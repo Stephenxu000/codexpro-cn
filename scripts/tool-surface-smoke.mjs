@@ -130,7 +130,7 @@ try {
   const config = await client.request('tools/call', { name: 'server_config', arguments: {} });
   if (config.isError) throw new Error('server_config failed on stable surface');
   if (config.structuredContent.toolSurface !== 'stable') throw new Error('server_config did not report stable surface');
-  if (config.structuredContent.toolSchemaVersion !== 3) throw new Error('unexpected tool schema version');
+  if (config.structuredContent.toolSchemaVersion !== 4) throw new Error('unexpected tool schema version');
   if (!/^[a-f0-9]{16}$/.test(String(config.structuredContent.capabilityFingerprint || ''))) {
     throw new Error('missing capability fingerprint');
   }
@@ -158,6 +158,26 @@ try {
   if (wrapped.structuredContent.wrapped_tool !== 'list_workspaces') {
     throw new Error('wrapped action did not identify list_workspaces');
   }
+
+  // A stale connector snapshot may still call a formerly visible low-frequency tool
+  // directly. Stable surface must keep those calls compatible without re-advertising
+  // the tool in tools/list.
+  const staleInspect = await client.request('tools/call', {
+    name: 'inspect_workspace',
+    arguments: { path: '.', max_files: 20, include_symbols: false, include_relationships: false }
+  });
+  if (staleInspect.isError) throw new Error('hidden inspect_workspace was not callable from a stale direct-tool snapshot');
+  if (direct.includes('inspect_workspace')) throw new Error('compat inspect_workspace leaked back into stable discovery');
+
+  const staleSkill = await client.request('tools/call', {
+    name: 'load_skill',
+    arguments: { name: '__codexpro_missing_skill_regression__', include_global_skills: false, max_skills: 10 }
+  });
+  const staleSkillText = staleSkill.content?.map((item) => item.text || '').join('\n') || '';
+  if (!staleSkill.isError || !/Skill not found/i.test(staleSkillText)) {
+    throw new Error('hidden load_skill did not reach its real handler from a stale direct-tool snapshot');
+  }
+  if (direct.includes('load_skill')) throw new Error('compat load_skill leaked back into stable discovery');
 
   console.log(`tool surface smoke ok: ${direct.length} direct tools, ${actions.structuredContent.action_count} wrapped actions`);
 } finally {

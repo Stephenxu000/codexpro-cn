@@ -1,1 +1,1 @@
-export const TOOL_SCHEMA_VERSION = 3;
+export const TOOL_SCHEMA_VERSION = 4;

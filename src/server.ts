@@ -594,9 +594,30 @@ function registerCodexTool(
   if (!isToolEnabled(config, name)) return;
   const validatedHandler: CodexToolHandler = (args) => handler(validateToolArgs(name, options, args));
   rememberRegisteredToolHandler(server, name, validatedHandler);
-  if (!shouldExposeTool(config, name)) return;
   registerToolCompat(server, name, descriptorOptionsForConfig(config, name, options), validatedHandler);
-  rememberRegisteredTool(server, name);
+  if (shouldExposeTool(config, name)) rememberRegisteredTool(server, name);
+}
+
+function installStableToolListFilter(config: CodexProConfig, server: McpServer): void {
+  if (config.toolSurface !== "stable") return;
+
+  const protocol = (server as any).server;
+  const originalListHandler =
+    (typeof protocol?._getRequestHandler === "function" ? protocol._getRequestHandler("tools/list") : undefined) ??
+    protocol?._requestHandlers?.get?.("tools/list");
+  if (typeof originalListHandler !== "function" || typeof protocol?.setRequestHandler !== "function") {
+    throw new Error("Unsupported MCP SDK: stable tool surface requires tools/list request filtering.");
+  }
+
+  const exposedNames = new Set(registeredToolNames(server));
+  protocol.setRequestHandler("tools/list", async (request: any, context: any) => {
+    const result = await originalListHandler(request, context);
+    if (!result || !Array.isArray(result.tools)) return result;
+    return {
+      ...result,
+      tools: result.tools.filter((tool: any) => exposedNames.has(String(tool?.name ?? "")))
+    };
+  });
 }
 
 function serverInstructions(config: CodexProConfig): string {
@@ -3574,5 +3595,6 @@ ${result.prompt}
     }
   );
 
+  installStableToolListFilter(config, server);
   return server;
 }

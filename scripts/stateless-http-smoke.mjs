@@ -123,7 +123,7 @@ try {
     healthBefore.transportMode !== 'stateless' ||
     !healthBefore.serverEpoch ||
     !healthBefore.startedAt ||
-    healthBefore.toolSchemaVersion !== 3 ||
+    healthBefore.toolSchemaVersion !== 4 ||
     healthBefore.toolSurface !== 'expanded' ||
     !/^[a-f0-9]{16}$/.test(String(healthBefore.capabilityFingerprint || '')) ||
     !(healthBefore.availableActionCount + 1 >= healthBefore.directToolCount)
