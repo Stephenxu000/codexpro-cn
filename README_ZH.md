@@ -134,6 +134,14 @@ codexpro start --mode pro
 codexpro start --headless
 ```
 
+工具发现面和能力模式现在分开管理。`expanded` 会把当前模式允许的工具都直接暴露给 ChatGPT；`stable` 只直接暴露长期稳定的高频开发工具，低频能力仍可通过稳定的 `codexpro(action=...)` wrapper 调用，因此是“缩小发现面”，不是“删功能”：
+
+```bash
+CODEXPRO_TOOL_SURFACE=stable codexpro start --tool-mode full
+```
+
+可以通过 `server_config` 或 `codexpro(action="list_actions")` 查看当前 schema version、capability fingerprint、直接工具数和 wrapper actions。为兼容既有用户，默认仍是 `expanded`。
+
 可选工具卡片：
 
 ```bash

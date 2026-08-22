@@ -28,6 +28,7 @@ import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
+import { TOOL_SCHEMA_VERSION } from "./toolSchema.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -273,6 +274,10 @@ function registeredToolHandler(server: McpServer, name: string): CodexToolHandle
   return registeredToolHandlersByServer.get(server as object)?.get(name);
 }
 
+function availableToolNames(server: McpServer): string[] {
+  return [...(registeredToolHandlersByServer.get(server as object)?.keys() ?? [])];
+}
+
 function normalizeSupertoolAction(value: unknown): string {
   const raw = String(value ?? "list_actions").trim();
   const normalized = raw.toLowerCase().replace(/[\s-]+/g, "_");
@@ -420,6 +425,31 @@ const FULL_TOOL_NAMES = [
   "codex_usage"
 ] as const;
 
+const STABLE_DIRECT_TOOL_NAMES = new Set<string>([
+  SUPERTOOL_NAME,
+  "server_config",
+  "open_current_workspace",
+  "open_workspace",
+  "tree",
+  "search",
+  "read",
+  "write",
+  "edit",
+  "apply_patch",
+  "bash",
+  "git_status",
+  "git_diff",
+  "git_switch",
+  "git_create_branch",
+  "git_stage",
+  "git_stage_hunks",
+  "git_commit",
+  "git_merge",
+  "git_stash",
+  "git_restore",
+  "show_changes"
+]);
+
 const GIT_MUTATING_TOOLS = new Set<string>([
   "git_switch",
   "git_create_branch",
@@ -452,7 +482,7 @@ function codexSessionToolNames(config: CodexProConfig): string[] {
     : ["codex_sessions"];
 }
 
-function toolNamesForMode(config: CodexProConfig): string[] {
+function enabledToolNamesForMode(config: CodexProConfig): string[] {
   const names: string[] =
     config.toolMode === "full"
       ? [...FULL_TOOL_NAMES]
@@ -486,6 +516,40 @@ function toolNamesForMode(config: CodexProConfig): string[] {
   return names;
 }
 
+function toolNamesForMode(config: CodexProConfig): string[] {
+  const enabled = enabledToolNamesForMode(config);
+  if (config.toolSurface !== "stable") return enabled;
+  return enabled.filter((name) => STABLE_DIRECT_TOOL_NAMES.has(name));
+}
+
+export function toolCapabilitySummary(config: CodexProConfig) {
+  const exposedTools = [...toolNamesForMode(config)].sort();
+  const availableActions = enabledToolNamesForMode(config).filter((name) => name !== SUPERTOOL_NAME).sort();
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        schemaVersion: TOOL_SCHEMA_VERSION,
+        toolMode: config.toolMode,
+        toolSurface: config.toolSurface,
+        bashMode: config.bashMode,
+        writeMode: config.writeMode,
+        exposedTools,
+        availableActions
+      })
+    )
+    .digest("hex")
+    .slice(0, 16);
+  return {
+    schemaVersion: TOOL_SCHEMA_VERSION,
+    toolSurface: config.toolSurface,
+    exposedTools,
+    exposedToolCount: exposedTools.length,
+    availableActions,
+    availableActionCount: availableActions.length,
+    capabilityFingerprint: fingerprint
+  };
+}
+
 const MINIMAL_TOOLS = new Set<string>(MINIMAL_TOOL_NAMES);
 const STANDARD_TOOLS = new Set<string>(STANDARD_TOOL_NAMES);
 const registeredToolNamesByServer = new WeakMap<object, string[]>();
@@ -501,7 +565,7 @@ function registeredToolNames(server: McpServer): string[] {
   return [...(registeredToolNamesByServer.get(server as object) ?? [])];
 }
 
-function shouldRegisterTool(config: CodexProConfig, name: string): boolean {
+function isToolEnabled(config: CodexProConfig, name: string): boolean {
   if (config.connectionTest && CONNECTION_TEST_HIDDEN_TOOLS.has(name)) return false;
   if (name === "bash" && config.bashMode === "off") return false;
   if ((name === "write" || name === "edit" || name === "apply_patch" || name === "import_file" || GIT_MUTATING_TOOLS.has(name)) && config.writeMode !== "workspace") return false;
@@ -514,6 +578,12 @@ function shouldRegisterTool(config: CodexProConfig, name: string): boolean {
   return STANDARD_TOOLS.has(name);
 }
 
+function shouldExposeTool(config: CodexProConfig, name: string): boolean {
+  if (!isToolEnabled(config, name)) return false;
+  if (config.toolSurface !== "stable") return true;
+  return STABLE_DIRECT_TOOL_NAMES.has(name);
+}
+
 function registerCodexTool(
   config: CodexProConfig,
   server: McpServer,
@@ -521,11 +591,12 @@ function registerCodexTool(
   options: Record<string, unknown>,
   handler: CodexToolHandler
 ): void {
-  if (!shouldRegisterTool(config, name)) return;
+  if (!isToolEnabled(config, name)) return;
   const validatedHandler: CodexToolHandler = (args) => handler(validateToolArgs(name, options, args));
+  rememberRegisteredToolHandler(server, name, validatedHandler);
+  if (!shouldExposeTool(config, name)) return;
   registerToolCompat(server, name, descriptorOptionsForConfig(config, name, options), validatedHandler);
   rememberRegisteredTool(server, name);
-  rememberRegisteredToolHandler(server, name, validatedHandler);
 }
 
 function serverInstructions(config: CodexProConfig): string {
@@ -552,17 +623,20 @@ function serverInstructions(config: CodexProConfig): string {
     editInstruction,
     bashInstruction,
     "6. Prefer direct tools for bounded edits and deterministic verification. Use agent_run/task_submit only for broad refactors, exploration, or longer multi-step work.",
-    "7. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
+    config.toolSurface === "stable"
+      ? "7. The direct tool surface is intentionally stable and compact. If a low-frequency capability is not directly visible, call codexpro with action=list_actions and invoke it through that wrapper instead of concluding the connector is unavailable."
+      : "7. If connector caching hides an expected capability, use codexpro with action=list_actions as the stable fallback before concluding the connector is unavailable.",
+    "8. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
     config.codexSessions !== "off"
-      ? `7. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
+      ? `9. Codex session history access is enabled in ${config.codexSessions} mode. Use it only when the user asks for local Codex session history.`
       : "",
     config.requireBashSession && config.bashSessionId
-      ? `8. Bash session guard is enabled. Every bash call must include session_id="${config.bashSessionId}".`
+      ? `10. Bash session guard is enabled. Every bash call must include session_id="${config.bashSessionId}".`
       : config.bashSessionId
-        ? `8. Bash session label for this server is "${config.bashSessionId}".`
+        ? `10. Bash session label for this server is "${config.bashSessionId}".`
         : "",
     "",
-    `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, write=${config.writeMode}.`
+    `Current modes: tool=${config.toolMode}, surface=${config.toolSurface}, bash=${config.bashMode}, write=${config.writeMode}.`
   ].filter(Boolean).join("\n");
 }
 
@@ -1100,9 +1174,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "CodexPro Supertool",
       description:
-        "Stable wrapper for advanced ChatGPT connector setups. Pass action plus args to call an already-registered CodexPro tool without changing the visible schema; it cannot call tools disabled by the current mode.",
+        "Stable wrapper for connector caching and low-frequency CodexPro capabilities. Pass action plus args to call any enabled action without expanding the visible tool schema. Use list_actions when a capability is not exposed as a direct tool.",
       inputSchema: {
-        action: z.string().optional().describe("Action or registered tool name. Use list_actions to see what this server mode allows."),
+        action: z.string().optional().describe("Enabled CodexPro action name. Use list_actions to discover low-frequency actions hidden from the stable direct-tool surface."),
         args: z.record(z.string(), z.any()).optional().describe("Arguments for the selected action. Same shape as the wrapped CodexPro tool.")
       },
       annotations: BASH_ANNOTATIONS,
@@ -1114,16 +1188,24 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const action = normalizeSupertoolAction(args.action);
-      const names = registeredToolNames(server).filter((name) => name !== SUPERTOOL_NAME);
+      const names = availableToolNames(server).filter((name) => name !== SUPERTOOL_NAME).sort();
+      const exposed = registeredToolNames(server).filter((name) => name !== SUPERTOOL_NAME).sort();
+      const capabilities = toolCapabilitySummary(config);
       if (action === "list_actions" || action === "help") {
         const text = [
           "# CodexPro Supertool",
           "",
-          "Use `codexpro` only when a stable wrapper is useful for ChatGPT connector caching or custom workflows. The explicit tools remain the preferred default because they give clearer descriptions and validation.",
+          "Prefer direct tools for common development work. Use `codexpro` for low-frequency actions or when a ChatGPT conversation has a stale connector tool snapshot.",
+          "",
+          `Tool surface: ${config.toolSurface}`,
+          `Schema version: ${TOOL_SCHEMA_VERSION}`,
+          `Capability fingerprint: ${capabilities.capabilityFingerprint}`,
+          `Direct tools: ${registeredToolNames(server).length}`,
+          `Available wrapped actions: ${names.length}`,
           "",
           "## Available actions",
           "",
-          names.length ? names.map((name) => `- ${name}`).join("\n") : "- none",
+          names.length ? names.map((name) => `${exposed.includes(name) ? "-" : "- (wrapper)"} ${name}`).join("\n") : "- none",
           "",
           "## Usage",
           "",
@@ -1134,11 +1216,16 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         return textResult(text, {
           actions: names,
           action_count: names.length,
+          direct_tools: exposed,
+          direct_tool_count: exposed.length + 1,
           aliases: SUPERTOOL_ACTION_ALIASES,
           tool_mode: config.toolMode,
+          tool_surface: config.toolSurface,
+          tool_schema_version: TOOL_SCHEMA_VERSION,
+          capability_fingerprint: capabilities.capabilityFingerprint,
           bash_mode: config.bashMode,
           write_mode: config.writeMode
-  });
+        });
       }
 
       if (action === SUPERTOOL_NAME) {
@@ -1149,7 +1236,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       if (!handler) {
         throw new CodexProError(
           `CodexPro action is not available in the current mode: ${action}. ` +
-            "Call codexpro with action=list_actions, or restart CodexPro with a broader tool mode if that action should be exposed."
+            "Call codexpro with action=list_actions to inspect enabled actions. Tool surface controls direct discovery only; tool mode and safety settings control whether an action is available."
         );
       }
 
@@ -1401,6 +1488,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       }
     },
     async () => {
+      const capabilities = toolCapabilitySummary(config);
       const safeConfig = {
         defaultRoot: config.defaultRoot,
         allowedRoots: config.allowedRoots,
@@ -1417,6 +1505,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         codexDir: config.codexDir,
         writeMode: config.writeMode,
         toolMode: config.toolMode,
+        toolSurface: config.toolSurface,
+        toolSchemaVersion: TOOL_SCHEMA_VERSION,
+        capabilityFingerprint: capabilities.capabilityFingerprint,
         toolCards: config.toolCards,
         connectionTest: config.connectionTest,
         analysisEnabled: config.analysisEnabled,
@@ -1430,7 +1521,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         maxSearchResults: config.maxSearchResults,
         blockedGlobs: config.blockedGlobs,
         registeredTools: registeredToolNames(server),
-        registeredToolCount: registeredToolNames(server).length
+        registeredToolCount: registeredToolNames(server).length,
+        availableActionCount: availableToolNames(server).filter((name) => name !== SUPERTOOL_NAME).length
       };
       return textResult(`# CodexPro Server Config\n\n${JSON.stringify(safeConfig, null, 2)}`, safeConfig);
     }

@@ -19,11 +19,11 @@ import {
   type WorkspaceProfile
 } from "./profileStore.js";
 import { redactSensitiveText, redactStructured } from "./redact.js";
-import { createCodexProServer } from "./server.js";
+import { createCodexProServer, toolCapabilitySummary } from "./server.js";
+import { TOOL_SCHEMA_VERSION } from "./toolSchema.js";
 
 const SERVER_STARTED_AT = new Date().toISOString();
 const SERVER_EPOCH = randomUUID();
-const TOOL_SCHEMA_VERSION = 2;
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -401,6 +401,7 @@ function profileResponse(config: CodexProConfig): Record<string, unknown> {
       codexSessions: config.codexSessions,
       writeMode: config.writeMode,
       toolMode: config.toolMode,
+      toolSurface: config.toolSurface,
       toolCards: config.toolCards,
       widgetDomain: config.widgetDomain,
       authEnabled: Boolean(config.authToken)
@@ -1580,6 +1581,7 @@ async function main(): Promise<void> {
   });
 
   app.get("/healthz", (_req, res) => {
+    const capabilities = toolCapabilitySummary(config);
     res.json({
       ok: true,
       name: "CodexPro",
@@ -1587,6 +1589,9 @@ async function main(): Promise<void> {
       startedAt: SERVER_STARTED_AT,
       transportMode: "stateless",
       toolSchemaVersion: TOOL_SCHEMA_VERSION,
+      capabilityFingerprint: capabilities.capabilityFingerprint,
+      directToolCount: capabilities.exposedToolCount,
+      availableActionCount: capabilities.availableActionCount,
       defaultRoot: config.defaultRoot,
       allowedRoots: config.allowedRoots,
       bashMode: config.bashMode,
@@ -1596,6 +1601,7 @@ async function main(): Promise<void> {
       codexSessions: config.codexSessions,
       writeMode: config.writeMode,
       toolMode: config.toolMode,
+      toolSurface: config.toolSurface,
       widgetDomain: config.widgetDomain,
       contextDir: config.contextDir,
       authEnabled: Boolean(config.authToken),

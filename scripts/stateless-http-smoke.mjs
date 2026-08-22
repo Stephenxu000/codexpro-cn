@@ -119,7 +119,15 @@ try {
   }
 
   const healthBefore = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
-  if (healthBefore.transportMode !== 'stateless' || !healthBefore.serverEpoch || !healthBefore.startedAt || healthBefore.toolSchemaVersion !== 2) {
+  if (
+    healthBefore.transportMode !== 'stateless' ||
+    !healthBefore.serverEpoch ||
+    !healthBefore.startedAt ||
+    healthBefore.toolSchemaVersion !== 3 ||
+    healthBefore.toolSurface !== 'expanded' ||
+    !/^[a-f0-9]{16}$/.test(String(healthBefore.capabilityFingerprint || '')) ||
+    !(healthBefore.availableActionCount + 1 >= healthBefore.directToolCount)
+  ) {
     throw new Error(`stateless health metadata missing: ${JSON.stringify(healthBefore)}`);
   }
 

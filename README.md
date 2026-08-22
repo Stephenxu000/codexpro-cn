@@ -126,6 +126,14 @@ codexpro start --mode pro
 codexpro start --headless
 ```
 
+Tool discovery surface is separate from capability mode. `expanded` keeps every enabled tool directly visible; `stable` exposes a compact set of common development tools and keeps low-frequency capabilities available through the stable `codexpro(action=...)` wrapper. This reduces connector-schema churn without removing functionality:
+
+```bash
+CODEXPRO_TOOL_SURFACE=stable codexpro start --tool-mode full
+```
+
+Use `server_config` or `codexpro(action="list_actions")` to inspect the current schema version, capability fingerprint, direct tool count, and wrapped actions. `expanded` remains the default for compatibility.
+
 Opt-in tool cards:
 
 ```bash

@@ -8,6 +8,7 @@ export type BashTranscriptMode = "compact" | "full";
 export type CodexSessionsMode = "off" | "metadata" | "read";
 export type WriteMode = "off" | "handoff" | "workspace";
 export type ToolMode = "minimal" | "standard" | "full";
+export type ToolSurface = "expanded" | "stable";
 export const MIN_HTTP_TOKEN_BYTES = 24;
 
 export interface CodexProConfig {
@@ -26,6 +27,7 @@ export interface CodexProConfig {
   codexDir: string;
   writeMode: WriteMode;
   toolMode: ToolMode;
+  toolSurface: ToolSurface;
   inheritEnv: boolean;
   maxReadBytes: number;
   maxWriteBytes: number;
@@ -188,6 +190,11 @@ function toolModeFrom(value: string | undefined): ToolMode {
   return "standard";
 }
 
+function toolSurfaceFrom(value: string | undefined): ToolSurface {
+  if (value === "expanded" || value === "stable") return value;
+  return "expanded";
+}
+
 function widgetDomainFrom(value: string | undefined): string {
   const raw = value?.trim() || "https://rebel0789.github.io";
   let parsed: URL;
@@ -276,6 +283,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
         : undefined;
   const writeArg = typeof args.write === "string" ? args.write : undefined;
   const toolModeArg = typeof args["tool-mode"] === "string" ? args["tool-mode"] : undefined;
+  const toolSurfaceArg = typeof args["tool-surface"] === "string" ? args["tool-surface"] : undefined;
   const widgetDomainArg = typeof args["widget-domain"] === "string" ? args["widget-domain"] : undefined;
   const toolCardsArg =
     args["tool-cards"] === true
@@ -321,6 +329,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     codexDir: expandHome(codexDirArg || process.env.CODEXPRO_CODEX_DIR || path.join(os.homedir(), ".codex")),
     writeMode: writeModeFrom(writeArg ?? process.env.CODEXPRO_WRITE_MODE),
     toolMode: toolModeFrom(toolModeArg ?? process.env.CODEXPRO_TOOL_MODE),
+    toolSurface: toolSurfaceFrom(toolSurfaceArg ?? process.env.CODEXPRO_TOOL_SURFACE),
     inheritEnv: process.env.CODEXPRO_INHERIT_ENV === "1",
     maxReadBytes: numberFrom(process.env.CODEXPRO_MAX_READ_BYTES, 180_000, 4_000, 2_000_000),
     maxWriteBytes: numberFrom(process.env.CODEXPRO_MAX_WRITE_BYTES, 1_000_000, 1_000, 10_000_000),
