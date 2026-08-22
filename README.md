@@ -166,12 +166,22 @@ Read [SECURITY.md](SECURITY.md) before exposing a tunnel.
 
 ## Update
 
+This maintenance fork does not update through the upstream npm package. Fetch upstream first, inspect the relationship, and only rebase when upstream has new commits:
+
 ```bash
-npm install -g codexpro@latest
-codexpro --version
+git status
+git fetch upstream --prune
+git rev-list --left-right --count main...upstream/main
 ```
 
-Restart `codexpro start` after updating. Saved profiles under `~/.codexpro` stay in place.
+When upstream has new commits:
+
+```bash
+git rebase upstream/main
+npm install
+npm run release:check
+git push --force-with-lease origin main
+```
 
 ## Development
 
@@ -183,16 +193,13 @@ npm run stress
 npm run release:check
 ```
 
-Publish only from the CodexPro root:
-
-```bash
-cd /path/to/codexpro
-npm run release:publish
-```
+This maintenance fork is marked `private: true`; publishing the upstream `codexpro` npm package from this repository is intentionally disabled.
 
 ## Docs
 
-- [Website](https://rebel0789.github.io/codexpro/)
+- [Maintainer learning guide (Chinese)](docs/maintainer-guide-zh.md)
+- [Fork / upstream / PR workflow (Chinese)](docs/open-source-workflow-zh.md)
+- [Upstream website](https://rebel0789.github.io/codexpro/)
 - [FAQ](FAQ.md)
 - [Security](SECURITY.md)
 - [Stable URL guide](DOMAIN_SETUP.md)

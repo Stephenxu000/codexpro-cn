@@ -174,16 +174,30 @@ chmod 600 ~/.codexpro/http-token
 
 ## 更新
 
+本维护 fork 不通过 upstream npm 包更新。先同步原项目，再决定是否把自己的维护提交 rebase 到最新 upstream：
+
 ```bash
-npm install -g codexpro@latest
-codexpro --version
+git status
+git fetch upstream --prune
+git rev-list --left-right --count main...upstream/main
 ```
 
-更新后重启 `codexpro start`。`~/.codexpro` 下的配置会保留。
+如果 upstream 有新提交，再执行：
+
+```bash
+git rebase upstream/main
+npm install
+npm run release:check
+git push --force-with-lease origin main
+```
+
+详细流程见 [开源协作指南](docs/open-source-workflow-zh.md)。
 
 ## 文档
 
-- [中文网站](https://rebel0789.github.io/codexpro/zh.html)
+- [维护者学习指南](docs/maintainer-guide-zh.md)
+- [Fork / Upstream / PR 开源协作指南](docs/open-source-workflow-zh.md)
+- [中文网站（upstream）](https://rebel0789.github.io/codexpro/zh.html)
 - [中文 FAQ](FAQ_ZH.md)
 - [Security](SECURITY.md)
 - [稳定 URL 指南](DOMAIN_SETUP.md)
