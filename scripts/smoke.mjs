@@ -1138,6 +1138,44 @@ if (process.platform !== 'win32') {
     name: 'open_current_workspace',
     arguments: { include_tree: false }
   });
+  const quotedOperatorResult = await processTreeClient.request('tools/call', {
+    name: 'bash',
+    arguments: {
+      workspace_id: processTreeOpened.structuredContent.workspace_id,
+      command: "printf '%s\n' 'alpha|beta;gamma>delta'"
+    }
+  });
+  if (quotedOperatorResult.structuredContent.stdout?.trim() !== 'alpha|beta;gamma>delta') {
+    throw new Error('bash quoted operators were not treated as literal arguments');
+  }
+  const readOnlyPipelineResult = await processTreeClient.request('tools/call', {
+    name: 'bash',
+    arguments: {
+      workspace_id: processTreeOpened.structuredContent.workspace_id,
+      command: "printf 'alpha\\n' | wc -l"
+    }
+  });
+  if (readOnlyPipelineResult.structuredContent.stdout?.trim() !== '1') {
+    throw new Error('bash read-only pipeline unexpectedly required confirmation or failed');
+  }
+  const devNullResult = await processTreeClient.request('tools/call', {
+    name: 'bash',
+    arguments: {
+      workspace_id: processTreeOpened.structuredContent.workspace_id,
+      command: 'command -v node >/dev/null 2>&1'
+    }
+  });
+  if (devNullResult.structuredContent.exitCode !== 0) {
+    throw new Error('bash /dev/null redirection unexpectedly failed');
+  }
+  await expectToolError('bash', {
+    workspace_id: processTreeOpened.structuredContent.workspace_id,
+    command: "printf ok; node -e 'console.log(1)'"
+  }, /confirmation/i, processTreeClient);
+  await expectToolError('bash', {
+    workspace_id: processTreeOpened.structuredContent.workspace_id,
+    command: 'printf x > bash-confirmation-probe.txt'
+  }, /confirmation/i, processTreeClient);
   const descendantPidPath = path.join(tmp, 'bash-descendant.pid');
   const descendantScript = [
     "const { spawn } = require('node:child_process');",

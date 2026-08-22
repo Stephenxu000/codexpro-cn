@@ -2536,11 +2536,11 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "Bash",
       description:
-        "Run a command in the workspace. In controlled full mode, ordinary commands run directly; destructive, service-changing, network, script-eval, or chained commands require confirm=true after reviewing the exact command and target.",
+        "Run a command in the workspace. In controlled full mode, read/search/status/build/test commands and read-only pipelines run directly. Destructive, system/service-changing, network, script-eval, command-substitution, or file-output commands require confirm=true after reviewing the exact command and target.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Pass it explicitly for non-default workspaces; omitted behavior is legacy-compatible and must not be relied on across stateless requests."),
         command: z.string().describe("Command to run."),
-        confirm: z.boolean().optional().describe("Required in controlled full mode for destructive, service-changing, network, script-eval, or chained commands. Review the exact command and target before setting true."),
+        confirm: z.boolean().optional().describe("Required in controlled full mode for destructive, system/service-changing, network, script-eval, command-substitution, or file-output commands. Read-only pipelines and quoted regex operators do not require confirmation."),
         session_id: z.string().optional().describe(config.requireBashSession && config.bashSessionId ? `Required bash session id for this server: ${config.bashSessionId}.` : "Optional bash session id. If configured on the server, a provided value must match it."),
         cwd: z.string().optional().describe("Working directory relative to workspace root. Default: ."),
         timeout_ms: z

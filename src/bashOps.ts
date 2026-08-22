@@ -144,18 +144,84 @@ const SAFE_BLOCKED_PATTERNS = [
 ];
 
 const FULL_CONFIRMATION_PATTERNS = [
-  /(^|\s)(rm|mv|cp|dd|chmod|chown|kill|pkill|sudo)\s+/,
-  /(^|\s)(launchctl)\s+(bootstrap|bootout|kickstart|enable|disable|remove)\b/,
-  /(^|\s)diskutil\s+(erase|partition|apfs\s+(deleteVolume|deleteContainer)|unmount)\b/,
-  /(^|\s)git\s+(push|reset|clean|checkout|switch|restore)\b/,
-  /(^|\s)(docker|podman)\s+(run|rm|rmi|system\s+prune|build|push|pull|exec|cp|volume\s+(rm|prune)|network\s+(rm|prune)|compose\s+(up|down|rm|build|push|run))\b/,
-  /(^|\s)(npm|pnpm|yarn)\s+publish\b/,
-  /(^|\s)(curl|wget|ssh|scp|rsync)\s+/,
-  /(^|\s)(node|python|python3|ruby|perl|osascript)\s+(-e|--eval)\b/,
-  /[;&|<>`\r\n]/,
+  /(^|[\s;&|])(rm|mv|cp|dd|chmod|chown|kill|pkill|sudo)\s+/,
+  /(^|[\s;&|])(launchctl)\s+(bootstrap|bootout|kickstart|enable|disable|remove)\b/,
+  /(^|[\s;&|])diskutil\s+(erase|partition|apfs\s+(deleteVolume|deleteContainer)|unmount)\b/,
+  /(^|[\s;&|])git\s+(push|reset|clean|checkout|switch|restore)\b/,
+  /(^|[\s;&|])(docker|podman)\s+(run|rm|rmi|system\s+prune|build|push|pull|exec|cp|volume\s+(rm|prune)|network\s+(rm|prune)|compose\s+(up|down|rm|build|push|run))\b/,
+  /(^|[\s;&|])(npm|pnpm|yarn)\s+publish\b/,
+  /(^|[\s;&|])(curl|wget|ssh|scp|rsync)\s+/,
+  /(^|[\s;&|])(node|python|python3|ruby|perl|osascript)\s+(-e|--eval)\b/,
+  /(^|[\s;&|])(sh|bash|zsh)\s+-c\b/,
+  /(^|[\s;&|])eval\s+/,
+  /(^|[\s;&|])(truncate|tee)\s+/,
+  /(^|[\s;&|])(sed|perl)\s+.*(^|\s)-i(?:\s|$)/,
   /(^|\s)['"]?-delete(?:['"]|\s|$)/,
   /(^|\s)['"]?-exec(?:dir)?(?:['"]|\s|$)/
 ];
+
+function hasActiveShellSyntaxRequiringConfirmation(command: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let unquoted = "";
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    const next = command[index + 1];
+
+    if (escaped) {
+      escaped = false;
+      unquoted += " ";
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      unquoted += " ";
+      continue;
+    }
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      unquoted += " ";
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null;
+      } else if (char === "`" || (char === "$" && next === "(")) {
+        return true;
+      }
+      unquoted += " ";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      unquoted += " ";
+      continue;
+    }
+    if (char === "`" || (char === "$" && next === "(")) return true;
+    unquoted += char;
+  }
+
+  const withoutBenignRedirection = unquoted
+    .replace(/(?:\d*>\s*\/dev\/null)/g, " ")
+    .replace(/(?:\d*>\s*&\s*\d+)/g, " ");
+  if (/>/.test(withoutBenignRedirection)) return true;
+  if (/(^|[^&])&([^&]|$)/.test(withoutBenignRedirection)) return true;
+  if (!/[;|\r\n]/.test(withoutBenignRedirection) && !/&&|\|\|/.test(withoutBenignRedirection)) return false;
+  return !isClearlySafeShellComposition(withoutBenignRedirection);
+}
+
+const FULL_COMPOSITION_ALLOWED_PREFIXES = ["rg", "grep", "cat", "head", "tail", "wc", "sed", "printf", "echo"];
+
+function isClearlySafeShellComposition(command: string): boolean {
+  const segments = command.split(/[;&|\r\n]+/).map((segment) => compact(segment)).filter(Boolean);
+  if (!segments.length) return false;
+  return segments.every(
+    (segment) =>
+      startsWithAllowedPrefix(segment) ||
+      FULL_COMPOSITION_ALLOWED_PREFIXES.some((prefix) => segment === prefix || segment.startsWith(`${prefix} `))
+  );
+}
 
 function compact(command: string): string {
   return command.trim().replace(/\s+/g, " ");
@@ -178,7 +244,10 @@ function assertSafeCommand(config: CodexProConfig, command: string, confirmed = 
   }
   if (config.bashMode === "full") {
     const normalized = compact(command);
-    if (FULL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(command) || pattern.test(normalized)) && !confirmed) {
+    const requiresConfirmation =
+      FULL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(command) || pattern.test(normalized)) ||
+      hasActiveShellSyntaxRequiringConfirmation(command);
+    if (requiresConfirmation && !confirmed) {
       throw new CodexProError(
         `Command requires explicit confirmation in controlled full mode: ${normalized}\n` +
           "Retry with confirm=true only after reviewing the exact command and target."
