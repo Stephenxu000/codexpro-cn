@@ -1291,8 +1291,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "reload_service",
     {
       title: "Reload Whitelisted Service",
-      description: "Reload one approved local LaunchAgent: ngrok or dashboard. The CodexPro bridge itself is intentionally not self-reloadable through MCP; planned bridge maintenance is performed through its single LaunchAgent.",
-      inputSchema: { service: z.enum(["ngrok", "dashboard"]).describe("Approved service name only.") },
+      description: "Reload exactly one approved local LaunchAgent: codexpro, ngrok, or dashboard. CodexPro reload is scheduled through a detached fixed helper so this response can complete before the bridge restarts and launchd re-reads its plist.",
+      inputSchema: { service: z.enum(["codexpro", "ngrok", "dashboard"]).describe("Approved service name only.") },
       annotations: LOCAL_WRITE_ANNOTATIONS
     },
     async (args) => {
