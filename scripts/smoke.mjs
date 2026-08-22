@@ -417,23 +417,29 @@ const alternate = await client.request('tools/call', {
   name: 'open_workspace',
   arguments: { root: alternateWorkspace, include_tree: false }
 });
-const selectedRead = await client.request('tools/call', {
+const implicitDefaultRead = await client.request('tools/call', {
   name: 'read',
-  arguments: { path: 'selected.txt' }
+  arguments: { path: 'demo.txt' }
 });
-const selectedText = selectedRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
-if (!selectedText.includes('alternate workspace')) {
-  throw new Error(`read without workspace_id did not use selected workspace: ${selectedText}`);
+const implicitDefaultText = implicitDefaultRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+if (!implicitDefaultText.includes('omega')) {
+  throw new Error(`read without workspace_id did not use configured default workspace: ${implicitDefaultText}`);
+}
+const explicitAlternateRead = await client.request('tools/call', {
+  name: 'read',
+  arguments: { workspace_id: alternate.structuredContent.workspace_id, path: 'selected.txt' }
+});
+const explicitAlternateText = explicitAlternateRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
+if (!explicitAlternateText.includes('alternate workspace')) {
+  throw new Error(`read with explicit alternate workspace_id failed: ${explicitAlternateText}`);
 }
 const listedWorkspaces = await client.request('tools/call', { name: 'list_workspaces', arguments: {} });
-if (listedWorkspaces.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
-  throw new Error(`list_workspaces did not report selected workspace: ${JSON.stringify(listedWorkspaces.structuredContent)}`);
+if (listedWorkspaces.structuredContent.default_workspace_id !== current.structuredContent.workspace_id) {
+  throw new Error(`list_workspaces did not report configured default workspace: ${JSON.stringify(listedWorkspaces.structuredContent)}`);
 }
 const resetCurrent = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
-const resetRead = await client.request('tools/call', { name: 'read', arguments: { path: 'demo.txt' } });
-const resetText = resetRead.content?.find?.((part) => part.type === 'text')?.text ?? '';
-if (resetCurrent.structuredContent.workspace_id !== current.structuredContent.workspace_id || !resetText.includes('omega')) {
-  throw new Error('open_current_workspace did not restore the launch workspace selection');
+if (resetCurrent.structuredContent.workspace_id !== current.structuredContent.workspace_id) {
+  throw new Error('open_current_workspace did not return the configured default workspace');
 }
 const selfTest = await client.request('tools/call', {
   name: 'codexpro_self_test',
@@ -1145,6 +1151,7 @@ if (process.platform !== 'win32') {
     arguments: {
       workspace_id: processTreeOpened.structuredContent.workspace_id,
       command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(descendantScript)}`,
+      confirm: true,
       timeout_ms: 1000
     }
   });

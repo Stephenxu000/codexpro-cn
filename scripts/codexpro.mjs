@@ -1119,7 +1119,8 @@ function spawnLogged(name, command, args, options = {}) {
     const text = redactForLog(String(chunk));
     logLines.push(...text.split(/\r?\n/).filter(Boolean).map((line) => `[${name}] ${line}`));
     while (logLines.length > 120) logLines.shift();
-    if (verbose) stream.write(`[${name}] ${text}`);
+    const sessionLifecycleEvent = text.includes('[CodexPro] MCP session ');
+    if (verbose || sessionLifecycleEvent) stream.write(`[${name}] ${text}`);
   };
   child.codexproLogTail = () => logLines.join('\n');
   spawnedChildren.add(child);
@@ -2825,7 +2826,7 @@ function printConnectorBlock(endpoint, token, options = {}) {
     console.log(serverUrl);
   } else if (options.copyUrl === false && publicHttps) {
     console.log('  URL        not copied; press c to copy or u to show');
-  } else if (!publicHttps) {
+  } else if (!publicHttps && !options.headless) {
     console.log('  URL        local HTTP only');
     console.log(serverUrl);
   }
@@ -2845,7 +2846,7 @@ function printConnectorBlock(endpoint, token, options = {}) {
     console.log('');
   }
   if (options.headless) {
-    console.log(`CODEXPRO_READY ${serverUrl}`);
+    console.log(`CODEXPRO_READY auth=${token ? 'required' : 'disabled'}`);
   } else {
     console.log('Next: press Enter to open ChatGPT, paste the copied Server URL, choose Authentication: None.');
     console.log('Keys: Enter open | c copy | o status | h help | q quit');

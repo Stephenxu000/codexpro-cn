@@ -30,6 +30,35 @@ const SAFE_ALLOWED_PREFIXES = [
   "git branch",
   "git rev-parse",
   "git ls-files",
+  "launchctl list",
+  "launchctl print",
+  "launchctl blame",
+  "log show",
+  "df",
+  "diskutil list",
+  "diskutil info",
+  "diskutil apfs list",
+  "ps",
+  "pgrep",
+  "lsof",
+  "ifconfig",
+  "scutil --dns",
+  "networksetup -getinfo",
+  "networksetup -listallhardwareports",
+  "route -n get",
+  "docker ps",
+  "docker images",
+  "docker info",
+  "docker inspect",
+  "brew list",
+  "brew info",
+  "node --version",
+  "npm --version",
+  "python3 --version",
+  "python --version",
+  "which",
+  "command -v",
+  "printenv",
   "npm test",
   "npm run test",
   "npm run typecheck",
@@ -84,7 +113,7 @@ const SAFE_BLOCKED_PATTERNS = [
   /(^|\s)ssh\s+/,
   /(^|\s)scp\s+/,
   /(^|\s)rsync\s+/,
-  /(^|\s)docker\s+/,
+  /(^|\s)docker\s+(run|rm|rmi|system\s+prune|build|push|pull|exec|cp|volume\s+(rm|prune)|network\s+(rm|prune)|compose\s+(up|down|rm|build|push|run))\b/,
   /(^|\s)podman\s+/,
   /(^|\s)git\s+push\b/,
   /(^|\s)git\s+reset\b/,
@@ -92,10 +121,10 @@ const SAFE_BLOCKED_PATTERNS = [
   /(^|\s)git\s+checkout\b/,
   /(^|\s)git\s+switch\b/,
   /(^|\s)git\s+restore\b/,
+  /(^|\s)(\/|~(?:\/|\s|$))/,
   /(^|\s)(npm|pnpm|yarn)\s+publish\b/,
   /(^|\s)--no-index\b/,
   /(^|\s)--fix\b/,
-  /(^|\s)(\/|~(?:\/|\s|$))/,
   /(^|\s)\.\.(?:\/|\s|$)/,
   /\$/,
   /(^|[\s:])(?:\.env(?:[./\s:]|$)|\.git(?:[\/\s:]|$)|node_modules(?:[\/\s:]|$)|\.ssh(?:[\/\s:]|$)|id_rsa(?:[.\s:]|$)|id_ed25519(?:[.\s:]|$)|[^\s:]*\.(?:pem|key)(?:[\s:]|$))/,
@@ -114,6 +143,20 @@ const SAFE_BLOCKED_PATTERNS = [
   /[\r\n]/
 ];
 
+const FULL_CONFIRMATION_PATTERNS = [
+  /(^|\s)(rm|mv|cp|dd|chmod|chown|kill|pkill|sudo)\s+/,
+  /(^|\s)(launchctl)\s+(bootstrap|bootout|kickstart|enable|disable|remove)\b/,
+  /(^|\s)diskutil\s+(erase|partition|apfs\s+(deleteVolume|deleteContainer)|unmount)\b/,
+  /(^|\s)git\s+(push|reset|clean|checkout|switch|restore)\b/,
+  /(^|\s)(docker|podman)\s+(run|rm|rmi|system\s+prune|build|push|pull|exec|cp|volume\s+(rm|prune)|network\s+(rm|prune)|compose\s+(up|down|rm|build|push|run))\b/,
+  /(^|\s)(npm|pnpm|yarn)\s+publish\b/,
+  /(^|\s)(curl|wget|ssh|scp|rsync)\s+/,
+  /(^|\s)(node|python|python3|ruby|perl|osascript)\s+(-e|--eval)\b/,
+  /[;&|<>`\r\n]/,
+  /(^|\s)['"]?-delete(?:['"]|\s|$)/,
+  /(^|\s)['"]?-exec(?:dir)?(?:['"]|\s|$)/
+];
+
 function compact(command: string): string {
   return command.trim().replace(/\s+/g, " ");
 }
@@ -129,11 +172,20 @@ function isAllowedPackageScript(command: string): boolean {
   return packageScriptPattern.test(command);
 }
 
-function assertSafeCommand(config: CodexProConfig, command: string): void {
+function assertSafeCommand(config: CodexProConfig, command: string, confirmed = false): void {
   if (config.bashMode === "off") {
     throw new CodexProError("bash tool is disabled. Start with CODEXPRO_BASH_MODE=safe or CODEXPRO_BASH_MODE=full to enable it.");
   }
-  if (config.bashMode === "full") return;
+  if (config.bashMode === "full") {
+    const normalized = compact(command);
+    if (FULL_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(command) || pattern.test(normalized)) && !confirmed) {
+      throw new CodexProError(
+        `Command requires explicit confirmation in controlled full mode: ${normalized}\n` +
+          "Retry with confirm=true only after reviewing the exact command and target."
+      );
+    }
+    return;
+  }
 
   const raw = command.trim();
   const normalized = compact(command);
@@ -269,11 +321,11 @@ export async function runBash(
   guard: PathGuard,
   workspace: Workspace,
   command: string,
-  options: { cwd?: string; timeoutMs?: number; sessionId?: string } = {}
+  options: { cwd?: string; timeoutMs?: number; sessionId?: string; confirm?: boolean } = {}
 ): Promise<BashResult> {
   if (!command?.trim()) throw new CodexProError("command is required.");
   const bashSessionId = assertBashSession(config, options.sessionId);
-  assertSafeCommand(config, command);
+  assertSafeCommand(config, command, options.confirm === true);
   const cwdResolved = guard.resolve(workspace, options.cwd ?? ".");
   const cwd = cwdResolved.absPath;
   const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, config.maxBashTimeoutMs));

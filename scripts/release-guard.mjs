@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const CODEXPRO_PACKAGE = "codexpro";
 export const CODEXPRO_REPOSITORY = "git+https://github.com/rebel0789/codexpro.git";
+export const CODEXPRO_MAINTENANCE_REPOSITORY = "git+https://github.com/Stephenxu000/codexpro-cn.git";
 export const CODEXPRO_ROOT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 
 function canonicalPath(value) {
@@ -38,8 +39,14 @@ export function assertCodexProReleaseEnvironment({ cwd = process.cwd(), env = pr
   if (packageJson.name !== CODEXPRO_PACKAGE) {
     throw new Error(`Expected package name ${CODEXPRO_PACKAGE}; found ${packageJson.name ?? "(missing)"}.`);
   }
-  if (packageJson.repository?.url !== CODEXPRO_REPOSITORY) {
-    throw new Error("CodexPro repository metadata does not match the canonical release repository.");
+  const maintenanceFork = packageJson.private === true;
+  const expectedRepository = maintenanceFork ? CODEXPRO_MAINTENANCE_REPOSITORY : CODEXPRO_REPOSITORY;
+  if (packageJson.repository?.url !== expectedRepository) {
+    throw new Error(
+      maintenanceFork
+        ? "CodexPro maintenance-fork repository metadata does not match the configured private repository."
+        : "CodexPro repository metadata does not match the canonical release repository."
+    );
   }
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageJson.version ?? "")) {
     throw new Error("CodexPro package.json has an invalid release version.");
@@ -48,7 +55,8 @@ export function assertCodexProReleaseEnvironment({ cwd = process.cwd(), env = pr
   return {
     root: CODEXPRO_ROOT,
     name: packageJson.name,
-    version: packageJson.version
+    version: packageJson.version,
+    maintenanceFork
   };
 }
 
@@ -59,7 +67,11 @@ function isDirectInvocation() {
 if (isDirectInvocation()) {
   try {
     const release = assertCodexProReleaseEnvironment();
-    console.log(`CodexPro release guard: ${release.name}@${release.version}`);
+    console.log(
+      release.maintenanceFork
+        ? `CodexPro maintenance guard: ${release.name}@${release.version} (private fork; npm publish disabled)`
+        : `CodexPro release guard: ${release.name}@${release.version}`
+    );
   } catch (error) {
     console.error(`[release guard] ${error.message}`);
     process.exitCode = 1;

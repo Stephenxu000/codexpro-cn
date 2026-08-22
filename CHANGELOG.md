@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Migrated the runtime MCP implementation to TypeScript SDK v2 (`@modelcontextprotocol/client`, `server`, and `node`) with Zod v4, while keeping a patched v1 SDK only as a development dependency for legacy-client compatibility tests.
+- Replaced the sessionful HTTP transport with a single stateless `/mcp` endpoint. Transport-session maps, TTL/capacity pruning, reconnect headers, and session resurrection logic were removed; a stale legacy `Mcp-Session-Id` header is ignored only as an upgrade shim.
+- Made workspace state explicit and restart-safe: non-default projects use stable persisted `workspace_id` handles, omitted ids resolve to the configured default workspace, and workspace registry state lives outside repositories under Application Support.
+- Added first-class local Git tools for switch/create-branch/stage/partial-stage/commit/merge/stash/restore, with confirmation reserved for destructive restore modes. `git_stage_hunks` verifies selected hunks already exist in the working tree before modifying the index.
+- Added durable work-unit baselines, cached native skill search, changed-JavaScript syntax verification, `serverEpoch`/`startedAt`/`transportMode`/`toolSchemaVersion` health metadata, stateless restart/stale-header regression coverage, and zero-known-vulnerability dependency audit.
+- Rebased personal maintenance onto the current upstream tree, preserved the previous fork history on an archive branch, marked this repository private for npm publishing, and made local ServerAdmin/Codex/service integration paths configurable instead of hard-coding one machine account.
+
 ## 0.30.0 (2026-08-08)
 
 - Published the multi-project allowlist that was already on `main`: `codexpro settings set --project`, `--clear-projects`, session-local `open_workspace` selection, and matching FAQ guidance. npm `0.29.0` did not include those commits, which caused empty Allowed Roots reports after following current docs.

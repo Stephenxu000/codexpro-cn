@@ -68,6 +68,13 @@ motion support. Animate transform and opacity only.
 - Do not expose raw local paths as marketing proof. Local admin can show them
   because it is token-protected and opened by the local user.
 
+## State model
+
+- HTTP transport is stateless on the single `/mcp` endpoint; transport session ids are neither created nor persisted.
+- Durable cross-request context uses explicit handles such as `workspace_id`, `task_id`, `job_id`, and `work_unit_id`.
+- Requests without `workspace_id` use the configured default workspace. Non-default workspaces must pass their stable id explicitly.
+- Runtime state such as workspace registry and work-unit baselines lives outside source repositories under the CodexPro Application Support directory.
+
 ## Shared Components
 
 - Primary action: blue filled button.

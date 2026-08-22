@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "profiles": {
+    "economy": { "model": "gpt-5.6-luna" },
+    "balanced": { "model": "gpt-5.6-terra" },
+    "power": { "model": "gpt-5.6-sol" }
+  },
+  "default_profile": "auto",
+  "default_max_profile": "balanced",
+  "notes": "Update model slugs here after controlled verification; do not change agent_run schema."
+}

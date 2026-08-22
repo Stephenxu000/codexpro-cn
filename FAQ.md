@@ -222,7 +222,7 @@ Use `CODEXPRO_WRITE_MODE=off` when you want direct `write` and `edit` tools remo
 
 CodexPro cannot attach to, read, or execute inside a specific Codex app conversation or terminal session.
 
-The MCP `bash` tool runs from the CodexPro server process you started for the configured workspace. MCP session ids are HTTP transport state between ChatGPT and CodexPro; they are not Codex conversation ids.
+The MCP `bash` tool runs from the CodexPro server process you started for the configured workspace. CodexPro's HTTP transport is stateless, so it does not use MCP transport sessions to choose a workspace or preserve shell state; explicit `workspace_id` and the optional local bash session label are separate concepts from Codex conversation ids.
 
 What CodexPro can do is require a matching local bash session label before it runs shell commands:
 
@@ -371,7 +371,7 @@ Run `codexpro setup` in each repo and save a profile per workspace. Do not reuse
 
 ## How do multiple ChatGPT sessions avoid overwriting each other?
 
-Workspace selection is session-local. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read. New files use atomic replacement; existing files are updated in place to retain inode-bound metadata and hard links.
+Workspace identity is explicit and stateless: requests without `workspace_id` use the configured default workspace, while non-default projects use their stable `workspace_id`. For shared files, read the file first and pass its returned SHA-256 as `expected_sha256` to `write` or `edit`. CodexPro rejects the operation if the file changed after that read. New files use atomic replacement; existing files are updated in place to retain inode-bound metadata and hard links.
 
 This protects against stale file content. It does not turn CodexPro into a collaborative merge server, so separate worktrees remain the stronger choice for large overlapping changes.
 

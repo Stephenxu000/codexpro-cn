@@ -13,6 +13,14 @@ export interface Workspace {
   openedAt: string;
 }
 
+// Explicit workspace ids survive separate MCP server objects and bridge restarts.
+// Connection/session state never decides which non-default workspace a tool targets.
+const sharedWorkspaces = new Map<string, Workspace>();
+const CODEXPRO_STATE_DIR = path.join(os.homedir(), "Library", "Application Support", "CodexPro");
+const WORKSPACE_REGISTRY_PATH = path.join(CODEXPRO_STATE_DIR, "workspaces.json");
+const LEGACY_WORKSPACE_REGISTRY_PATH = path.join(os.homedir(), "ServerAdmin", "state", "codexpro-workspaces.json");
+const WORKSPACE_ID_RE = /^ws_[a-f0-9]{24}$/;
+
 export class CodexProError extends Error {
   constructor(message: string) {
     super(message);
@@ -40,6 +48,55 @@ function workspaceIdForRoot(realRoot: string): string {
   return `ws_${createHash("sha256").update(realRoot).digest("hex").slice(0, 24)}`;
 }
 
+function readWorkspaceRegistry(): Record<string, string> {
+  const valid: Record<string, string> = {};
+  for (const registryPath of [LEGACY_WORKSPACE_REGISTRY_PATH, WORKSPACE_REGISTRY_PATH]) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const workspaces = (parsed as { workspaces?: unknown }).workspaces;
+      if (!workspaces || typeof workspaces !== "object" || Array.isArray(workspaces)) continue;
+      for (const [id, root] of Object.entries(workspaces as Record<string, unknown>)) {
+        if (!WORKSPACE_ID_RE.test(id) || typeof root !== "string" || !root) continue;
+        const realRoot = maybeRealpath(root);
+        if (!realRoot || workspaceIdForRoot(realRoot) !== id) continue;
+        valid[id] = realRoot;
+      }
+    } catch {
+      // Missing/invalid registries are ignored; explicit roots are always revalidated.
+    }
+  }
+  return valid;
+}
+
+function persistWorkspace(workspace: Workspace): void {
+  const directory = path.dirname(WORKSPACE_REGISTRY_PATH);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const workspaces = readWorkspaceRegistry();
+  workspaces[workspace.id] = workspace.root;
+  const temp = `${WORKSPACE_REGISTRY_PATH}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify({ version: 1, workspaces }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(temp, WORKSPACE_REGISTRY_PATH);
+    fs.chmodSync(WORKSPACE_REGISTRY_PATH, 0o600);
+  } finally {
+    try {
+      if (fs.existsSync(temp)) fs.unlinkSync(temp);
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
+}
+
+function persistedWorkspaceRoot(id: string): string | undefined {
+  if (!WORKSPACE_ID_RE.test(id)) return undefined;
+  const root = readWorkspaceRegistry()[id];
+  if (!root) return undefined;
+  const realRoot = maybeRealpath(root);
+  if (!realRoot || workspaceIdForRoot(realRoot) !== id) return undefined;
+  return realRoot;
+}
+
 function maybeRealpath(existingPath: string): string | undefined {
   try {
     return fs.realpathSync.native(existingPath);
@@ -60,22 +117,15 @@ function closestExistingParent(absPath: string): string {
 
 export class WorkspaceManager {
   private readonly workspaces = new Map<string, Workspace>();
-  private selectedWorkspaceId?: string;
 
   constructor(private readonly config: CodexProConfig) {}
 
   defaultWorkspace(): Workspace {
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === this.config.defaultRoot);
-    return existing ?? this.openWorkspace(this.config.defaultRoot, { select: false });
+    return existing ?? this.openWorkspace(this.config.defaultRoot);
   }
 
-  selectDefaultWorkspace(): Workspace {
-    const workspace = this.defaultWorkspace();
-    this.selectedWorkspaceId = workspace.id;
-    return workspace;
-  }
-
-  openWorkspace(rootInput?: string, options: { select?: boolean } = {}): Workspace {
+  openWorkspace(rootInput?: string): Workspace {
     const requested = rootInput?.trim() ? expandHome(rootInput.trim()) : this.config.defaultRoot;
     const resolved = path.resolve(requested);
     if (!fs.existsSync(resolved)) {
@@ -92,32 +142,43 @@ export class WorkspaceManager {
         `Workspace root is outside allowed roots: ${realRoot}\nAllowed roots:\n${this.config.allowedRoots.map((r) => `- ${r}`).join("\n")}`
       );
     }
+    const blockedRoot = this.config.allowedRoots.some((allowedRoot) => {
+      if (!isSubpath(realRoot, allowedRoot)) return false;
+      const relative = normalizeRelPath(path.relative(allowedRoot, realRoot));
+      if (relative === ".") return false;
+      return this.config.blockedGlobs.some(
+        (glob) =>
+          minimatch(relative, glob, { dot: true, nocase: false, matchBase: false }) ||
+          minimatch(path.basename(relative), glob, { dot: true, nocase: false, matchBase: true })
+      );
+    });
+    if (blockedRoot) throw new CodexProError(`Workspace root is blocked by safety rules: ${realRoot}`);
 
     const existing = [...this.workspaces.values()].find((workspace) => workspace.root === realRoot);
     if (existing) {
-      if (options.select !== false) this.selectedWorkspaceId = existing.id;
+      sharedWorkspaces.set(existing.id, existing);
+      persistWorkspace(existing);
       return existing;
     }
 
     const id = workspaceIdForRoot(realRoot);
     const workspace = { id, root: realRoot, openedAt: new Date().toISOString() };
     this.workspaces.set(id, workspace);
-    if (options.select !== false) this.selectedWorkspaceId = id;
+    sharedWorkspaces.set(id, workspace);
+    persistWorkspace(workspace);
     return workspace;
   }
 
   getWorkspace(id?: string): Workspace {
-    if (!id) {
-      if (this.selectedWorkspaceId) {
-        const selected = this.workspaces.get(this.selectedWorkspaceId);
-        if (selected) return selected;
-      }
-      return this.selectDefaultWorkspace();
-    }
+    if (!id) return this.defaultWorkspace();
     const workspace = this.workspaces.get(id);
     if (!workspace) {
+      const shared = sharedWorkspaces.get(id);
+      if (shared) return this.openWorkspace(shared.root);
+      const persistedRoot = persistedWorkspaceRoot(id);
+      if (persistedRoot) return this.openWorkspace(persistedRoot);
       const configuredRoot = this.config.allowedRoots.find((allowedRoot) => workspaceIdForRoot(allowedRoot) === id);
-      if (configuredRoot) return this.openWorkspace(configuredRoot, { select: false });
+      if (configuredRoot) return this.openWorkspace(configuredRoot);
     }
     if (!workspace) {
       throw new CodexProError(`Unknown workspace_id: ${id}. Call open_workspace first.`);
@@ -126,11 +187,9 @@ export class WorkspaceManager {
   }
 
   listWorkspaces(): Workspace[] {
-    return [...this.workspaces.values()];
-  }
-
-  currentWorkspaceId(): string {
-    return this.getWorkspace().id;
+    const merged = new Map<string, Workspace>(sharedWorkspaces);
+    for (const [id, workspace] of this.workspaces) merged.set(id, workspace);
+    return [...merged.values()];
   }
 }
 
@@ -187,6 +246,11 @@ export class PathGuard {
     }
 
     if (options.forWrite) {
+      const writeTarget = realTarget ?? absPath;
+      const readOnlyRoot = this.config.readOnlyRoots.find((root) => isSubpath(writeTarget, root) || isSubpath(workspace.root, root));
+      if (readOnlyRoot) {
+        throw new CodexProError(`Workspace is read-only for this operation: ${workspace.root}`);
+      }
       try {
         if (fs.lstatSync(absPath).isSymbolicLink()) {
           throw new CodexProError(`Refusing to write through a symlink: ${inputPath}`);

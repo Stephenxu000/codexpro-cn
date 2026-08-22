@@ -4,8 +4,7 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 async function getFreePort() {
   return new Promise((resolve, reject) => {
@@ -180,30 +179,6 @@ async function callTool(client, name, args = {}) {
   return result;
 }
 
-async function expectSessionNotFound(response, label) {
-  const body = await response.json();
-  if (
-    response.status !== 404 ||
-    !response.headers.get('content-type')?.includes('application/json') ||
-    body.error?.code !== -32001 ||
-    body.error?.message !== 'Session not found'
-  ) {
-    throw new Error(`expected ${label} to return JSON-RPC session-not-found 404, got ${response.status} ${JSON.stringify(body)}`);
-  }
-}
-
-function postToolsListWithSession(baseUrl, token, sessionId) {
-  return fetch(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`, {
-    method: 'POST',
-    headers: {
-      accept: 'application/json, text/event-stream',
-      'content-type': 'application/json',
-      'mcp-session-id': sessionId
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 404, method: 'tools/list', params: {} })
-  });
-}
-
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-smoke-'));
 const alternateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-http-alternate-'));
 await fs.writeFile(path.join(alternateRoot, 'selected.txt'), 'http alternate workspace\n', 'utf8');
@@ -327,7 +302,7 @@ try {
 
   const badMcpJson = await fetch(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: '{"jsonrpc":'
   });
   const badMcpBody = await badMcpJson.json();
@@ -337,12 +312,12 @@ try {
 
   const hugeMcpJson = await fetch(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { filler: 'x'.repeat(21 * 1024 * 1024) } })
   });
-  const hugeMcpBody = await hugeMcpJson.json();
-  if (hugeMcpJson.status !== 413 || hugeMcpBody.error?.code !== -32000) {
-    throw new Error(`expected oversized MCP body to return JSON-RPC payload error, got ${hugeMcpJson.status} ${JSON.stringify(hugeMcpBody)}`);
+  const hugeMcpText = await hugeMcpJson.text();
+  if (![200, 413].includes(hugeMcpJson.status) || (!hugeMcpText.includes("-32000") && !hugeMcpText.toLowerCase().includes("too large"))) {
+    throw new Error(`expected oversized MCP body to be rejected, got ${hugeMcpJson.status} ${hugeMcpText.slice(0, 500)}`);
   }
 
   const favicon = await fetch(`${baseUrl}/favicon.ico`);
@@ -532,7 +507,7 @@ try {
       path: 'session-checkpoint.txt'
     });
     if (!changes.structuredContent.changed || changes.structuredContent.review_checkpoint_hit) {
-      throw new Error(`first HTTP session did not receive its workspace changes: ${JSON.stringify(changes.structuredContent)}`);
+      throw new Error(`first stateless HTTP request did not receive its workspace changes: ${JSON.stringify(changes.structuredContent)}`);
     }
   });
   await withClient(mcpUrl, async (secondClient) => {
@@ -542,23 +517,17 @@ try {
       path: 'session-checkpoint.txt'
     });
     if (!changes.structuredContent.changed || changes.structuredContent.review_checkpoint_hit) {
-      throw new Error(`show_changes checkpoint leaked across HTTP sessions: ${JSON.stringify(changes.structuredContent)}`);
+      throw new Error(`show_changes checkpoint unexpectedly persisted across stateless HTTP requests: ${JSON.stringify(changes.structuredContent)}`);
     }
   });
-  const unknownSession = '00000000-0000-4000-8000-000000000000';
-  await expectSessionNotFound(await postToolsListWithSession(baseUrl, token, unknownSession), 'unknown POST session');
-  await expectSessionNotFound(await fetch(`${baseUrl}/mcp?codexpro_token=${encodeURIComponent(token)}`, {
-    headers: {
-      accept: 'text/event-stream',
-      'mcp-session-id': unknownSession
-    }
-  }), 'unknown GET session');
   await withClient(mcpUrl, async (client, transport) => {
-    await client.listTools();
-    const staleSession = transport.sessionId;
-    if (!staleSession) throw new Error('HTTP MCP client did not receive a session id');
-    await transport.terminateSession();
-    await expectSessionNotFound(await postToolsListWithSession(baseUrl, token, staleSession), 'stale POST session');
+    const tools = await client.listTools();
+    if (!tools.tools.some((tool) => tool.name === 'server_config')) {
+      throw new Error('stateless HTTP client lost tools/list');
+    }
+    if (transport.sessionId != null) {
+      throw new Error(`stateless HTTP transport unexpectedly received session id ${transport.sessionId}`);
+    }
   });
 
   await withClient(mcpUrl, async (client) => {
@@ -671,33 +640,35 @@ try {
       root: alternateRoot,
       include_tree: false
     });
-    const firstSelected = await callTool(firstClient, 'read', { path: 'selected.txt' });
-    const firstText = firstSelected.content?.find?.((part) => part.type === 'text')?.text ?? '';
-    if (!firstText.includes('http alternate workspace')) {
-      throw new Error(`first HTTP session did not retain selected workspace: ${firstText}`);
+    const alternateId = alternate.structuredContent.workspace_id;
+    if (!alternateId) throw new Error('open_workspace did not return stable workspace_id');
+
+    const implicitDefault = await callTool(firstClient, 'read', { path: 'session-checkpoint.txt' });
+    const implicitText = implicitDefault.content?.find?.((part) => part.type === 'text')?.text ?? '';
+    if (!implicitText.includes('checkpoint')) {
+      throw new Error(`omitted workspace_id did not resolve to the configured default workspace: ${implicitText}`);
+    }
+
+    const explicitAlternate = await callTool(firstClient, 'read', { workspace_id: alternateId, path: 'selected.txt' });
+    const alternateText = explicitAlternate.content?.find?.((part) => part.type === 'text')?.text ?? '';
+    if (!alternateText.includes('http alternate workspace')) {
+      throw new Error(`explicit alternate workspace_id was not honored: ${alternateText}`);
     }
 
     await withClient(mcpUrl, async (secondClient) => {
-      const secondList = await callTool(secondClient, 'list_workspaces');
-      if (
-        secondList.structuredContent.selected_workspace_id === alternate.structuredContent.workspace_id
-        || secondList.structuredContent.workspaces.some((workspace) => workspace.root === alternateRoot)
-      ) {
-        throw new Error(`HTTP workspace selection leaked between MCP sessions: ${JSON.stringify(secondList.structuredContent)}`);
+      const secondExplicit = await callTool(secondClient, 'read', { workspace_id: alternateId, path: 'selected.txt' });
+      const secondText = secondExplicit.content?.find?.((part) => part.type === 'text')?.text ?? '';
+      if (!secondText.includes('http alternate workspace')) {
+        throw new Error(`stable workspace_id did not resolve across stateless requests: ${secondText}`);
       }
     });
-
-    const firstList = await callTool(firstClient, 'list_workspaces');
-    if (firstList.structuredContent.selected_workspace_id !== alternate.structuredContent.workspace_id) {
-      throw new Error(`first HTTP session lost its workspace selection: ${JSON.stringify(firstList.structuredContent)}`);
-    }
   });
 
   await withClient(mcpUrl, async (client) => {
     const list = await callTool(client, 'list_workspaces');
     const ids = list.structuredContent.workspaces.map((workspace) => workspace.id);
     if (!ids.includes(opened)) {
-      throw new Error(`session list_workspaces missing configured workspace ${opened}; got ${ids.join(', ')}`);
+      throw new Error(`list_workspaces missing configured workspace ${opened}; got ${ids.join(', ')}`);
     }
 
     const snapshot = await callTool(client, 'workspace_snapshot', { workspace_id: opened, max_depth: 1 });

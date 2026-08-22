@@ -9,13 +9,14 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/codexpro"><img alt="npm" src="https://img.shields.io/npm/v/codexpro?style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rebel0789/codexpro/ci.yml?branch=main&style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/rebel0789/codexpro?style=flat-square"></a>
-  <a href="https://rebel0789.github.io/codexpro/"><img alt="Website" src="https://img.shields.io/badge/site-GitHub%20Pages-67e8f9?style=flat-square"></a>
+  <a href="https://github.com/Stephenxu000/codexpro-cn/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Stephenxu000/codexpro-cn/ci.yml?branch=main&style=flat-square"></a>
+  <a href="https://github.com/Stephenxu000/codexpro-cn/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/Stephenxu000/codexpro-cn?style=flat-square"></a>
+  <a href="https://github.com/rebel0789/codexpro"><img alt="Upstream" src="https://img.shields.io/badge/upstream-rebel0789%2Fcodexpro-181717?style=flat-square"></a>
 </p>
 
 ## What it is
+
+This repository is a personal maintenance fork of [rebel0789/codexpro](https://github.com/rebel0789/codexpro). Upstream attribution and the original license are preserved; `upstream` is used for read-only synchronization while this repository carries local development and operational improvements.
 
 CodexPro is a local MCP server. It connects **your ChatGPT session** to **your machine** and **repos you allow**.
 
@@ -31,11 +32,18 @@ Needs:
 - A ChatGPT account that can create custom MCP plugins
 - An HTTPS URL to your machine for ChatGPT web (tunnel or Tailscale Funnel)
 
+For this maintenance fork, install from source so the local CLI matches this repository:
+
 ```bash
-npm install -g codexpro
-cd /path/to/your/repo
+git clone https://github.com/Stephenxu000/codexpro-cn.git
+cd codexpro-cn
+npm install
+npm run build
+npm link
 codexpro setup
 ```
+
+`npm install -g codexpro` installs the upstream npm release, not this fork.
 
 ## Connect in ChatGPT
 
@@ -81,9 +89,18 @@ codexpro settings show
 codexpro start
 ```
 
-Ask ChatGPT to `open_workspace` on an allowed project. `open_current_workspace` returns to the launch repo.
+Ask ChatGPT to `open_workspace` on an allowed project. It returns a stable `workspace_id`; pass that id explicitly on later calls for non-default projects. `open_current_workspace` returns to the launch repo.
 
 For two ChatGPT accounts or hard isolation, run two CodexPro processes on different ports and Server URLs.
+
+## HTTP transport
+
+CodexPro uses the MCP 2026 stateless HTTP model on the single `/mcp` endpoint:
+
+- `/mcp` does not create, persist, or restore transport sessions. Bridge restarts therefore do not require reviving a session.
+- A stale legacy `Mcp-Session-Id` request header is ignored during upgrade compatibility; it never selects server state.
+- Non-default project state is carried explicitly with stable handles such as `workspace_id`, `task_id`, and `job_id`. Omitting `workspace_id` resolves to the configured default workspace.
+- `workspace_id` is derived from the canonical project root and persisted outside the repository, so the same logical workspace can be resolved after bridge restarts.
 
 ## Commands
 

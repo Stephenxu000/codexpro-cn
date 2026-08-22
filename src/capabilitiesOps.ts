@@ -31,6 +31,8 @@ export interface McpServerInventoryItem {
 }
 
 const MAX_MCP_SERVER_INVENTORY = 120;
+const SKILL_CACHE_TTL_MS = 60_000;
+const skillInventoryCache = new Map<string, { expiresAt: number; records: SkillInventoryRecord[] }>();
 
 function unique<T>(items: T[], key: (item: T) => string): T[] {
   const seen = new Set<string>();
@@ -262,6 +264,9 @@ async function discoverSkillRecords(
   const workspaceRoot = realpathOrUndefined(workspace.root) ?? path.resolve(workspace.root);
   const requestedHomeDir = options.homeDir ?? os.homedir();
   const homeDir = realpathOrUndefined(requestedHomeDir) ?? path.resolve(requestedHomeDir);
+  const cacheKey = JSON.stringify({ workspaceRoot, homeDir, includeGlobal: options.includeGlobal === true, maxSkills });
+  const cached = skillInventoryCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.records;
   const homes = homePathCandidates(requestedHomeDir, homeDir);
   const workspaceRoots = [
     path.join(workspaceRoot, ".codex", "skills"),
@@ -321,7 +326,9 @@ async function discoverSkillRecords(
     });
   }
 
-  return unique(items, (item) => `${item.source}:${item.name}:${item.path}`).sort(compareSkillPrecedence);
+  const records = unique(items, (item) => `${item.source}:${item.name}:${item.path}`).sort(compareSkillPrecedence);
+  skillInventoryCache.set(cacheKey, { expiresAt: Date.now() + SKILL_CACHE_TTL_MS, records });
+  return records;
 }
 
 export async function discoverSkillInventory(
@@ -329,6 +336,23 @@ export async function discoverSkillInventory(
   options: { includeGlobal?: boolean; maxSkills?: number; homeDir?: string } = {}
 ): Promise<SkillInventoryItem[]> {
   return activeSkillRecords(await discoverSkillRecords(workspace, options)).map(publicSkill);
+}
+
+export async function searchSkills(
+  workspace: Workspace,
+  queryInput: string,
+  options: { includeGlobal?: boolean; maxSkills?: number; limit?: number } = {}
+): Promise<SkillInventoryItem[]> {
+  const query = queryInput.trim().toLowerCase();
+  if (!query) throw new Error("Skill search query is required.");
+  const limit = Math.max(1, Math.min(options.limit ?? 20, 100));
+  const inventory = await discoverSkillInventory(workspace, {
+    includeGlobal: options.includeGlobal !== false,
+    maxSkills: options.maxSkills ?? 500
+  });
+  return inventory
+    .filter((skill) => `${skill.name}\n${skill.description ?? ""}\n${skill.source}`.toLowerCase().includes(query))
+    .slice(0, limit);
 }
 
 export async function loadSkill(

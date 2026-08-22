@@ -33,9 +33,8 @@ export interface CodexProConfig {
   maxBashTimeoutMs: number;
   maxImportBytes: number;
   maxSearchResults: number;
-  maxHttpSessions: number;
-  httpSessionTtlMs: number;
   blockedGlobs: string[];
+  readOnlyRoots: string[];
   contextDir: string;
   toolCards: boolean;
   connectionTest: boolean;
@@ -285,6 +284,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
         ? args["tool-cards"]
         : undefined;
   const extraBlockedGlobs = splitList(process.env.CODEXPRO_BLOCKED_GLOBS, ",");
+  const readOnlyRoots = [...new Set(splitList(process.env.CODEXPRO_READ_ONLY_ROOTS, ",").map(toRealDir))];
   const host = hostArg ?? process.env.CODEXPRO_HOST ?? process.env.HOST ?? "127.0.0.1";
   const authToken = process.env.CODEXPRO_HTTP_TOKEN ?? process.env.CODEBASE_BRIDGE_HTTP_TOKEN;
   if (authToken && Buffer.byteLength(authToken, "utf8") < MIN_HTTP_TOKEN_BYTES) {
@@ -329,9 +329,8 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     maxBashTimeoutMs: numberFrom(process.env.CODEXPRO_MAX_BASH_TIMEOUT_MS, 600_000, 1_000, 900_000),
     maxImportBytes: numberFrom(process.env.CODEXPRO_MAX_IMPORT_BYTES, 5_000_000, 1_000, 50_000_000),
     maxSearchResults: numberFrom(process.env.CODEXPRO_MAX_SEARCH_RESULTS, 200, 5, 2_000),
-    maxHttpSessions: numberFrom(process.env.CODEXPRO_MAX_HTTP_SESSIONS, 64, 1, 512),
-    httpSessionTtlMs: numberFrom(process.env.CODEXPRO_HTTP_SESSION_TTL_MS, 30 * 60_000, 60_000, 24 * 60 * 60_000),
     blockedGlobs: [...DEFAULT_BLOCKED_GLOBS, ...extraBlockedGlobs],
+    readOnlyRoots,
     contextDir: contextDirFrom(process.env.CODEXPRO_CONTEXT_DIR),
     toolCards: boolFrom(toolCardsArg ?? process.env.CODEXPRO_TOOL_CARDS, false),
     connectionTest: boolFrom(process.env.CODEXPRO_CONNECTION_TEST, false),

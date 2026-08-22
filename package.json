@@ -1,17 +1,18 @@
 {
   "name": "codexpro",
   "version": "0.30.0",
+  "private": true,
   "description": "Local MCP server that connects ChatGPT Plugins to explicitly allowed repos on your machine.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rebel0789/codexpro.git"
+    "url": "git+https://github.com/Stephenxu000/codexpro-cn.git"
   },
   "bugs": {
-    "url": "https://github.com/rebel0789/codexpro/issues"
+    "url": "https://github.com/Stephenxu000/codexpro-cn/issues"
   },
-  "homepage": "https://rebel0789.github.io/codexpro/",
+  "homepage": "https://github.com/Stephenxu000/codexpro-cn#readme",
   "contributors": [
     {
       "name": "yuczzzzz",
@@ -68,6 +69,7 @@
     "codexpro-mcp-http": "dist/http.js"
   },
   "scripts": {
+    "test": "npm run build && node scripts/smoke.mjs",
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/release-guard.mjs",
@@ -76,7 +78,7 @@
     "start:http": "node dist/http.js",
     "dev:stdio": "tsx src/stdio.ts",
     "dev:http": "tsx src/http.ts",
-    "smoke": "node scripts/analysis-smoke.mjs && node scripts/analysis-cli-smoke.mjs && node scripts/smoke.mjs && node scripts/skill-precedence-smoke.mjs && node scripts/import-smoke.mjs && node scripts/http-smoke.mjs && node scripts/widget-smoke.mjs && node scripts/pro-smoke.mjs && node scripts/doctor-smoke.mjs && node scripts/settings-smoke.mjs && node scripts/execute-handoff-smoke.mjs && node scripts/release-guard-smoke.mjs",
+    "smoke": "node scripts/analysis-smoke.mjs && node scripts/analysis-cli-smoke.mjs && node scripts/smoke.mjs && node scripts/skill-precedence-smoke.mjs && node scripts/import-smoke.mjs && node scripts/http-smoke.mjs && node scripts/stateless-http-smoke.mjs && node scripts/git-tools-smoke.mjs && node scripts/widget-smoke.mjs && node scripts/pro-smoke.mjs && node scripts/doctor-smoke.mjs && node scripts/settings-smoke.mjs && node scripts/execute-handoff-smoke.mjs && node scripts/release-guard-smoke.mjs",
     "stress": "npm run build && node scripts/stress.mjs",
     "analysis:smoke": "npm run build && node scripts/analysis-smoke.mjs",
     "analysis:cli-smoke": "npm run build && node scripts/analysis-cli-smoke.mjs",
@@ -97,13 +99,16 @@
     "release:publish": "node scripts/release-publish.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.4",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "minimatch": "^10.0.1",
-    "zod": "^3.25.76"
+    "zod": "^4.2.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.0.0",

@@ -9,16 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/codexpro"><img alt="npm" src="https://img.shields.io/npm/v/codexpro?style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rebel0789/codexpro/ci.yml?branch=main&style=flat-square"></a>
-  <a href="https://github.com/rebel0789/codexpro/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/rebel0789/codexpro?style=flat-square"></a>
-  <a href="https://rebel0789.github.io/codexpro/zh.html"><img alt="中文站点" src="https://img.shields.io/badge/site-%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3-67e8f9?style=flat-square"></a>
+  <a href="https://github.com/Stephenxu000/codexpro-cn/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Stephenxu000/codexpro-cn/ci.yml?branch=main&style=flat-square"></a>
+  <a href="https://github.com/Stephenxu000/codexpro-cn/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/Stephenxu000/codexpro-cn?style=flat-square"></a>
+  <a href="https://github.com/rebel0789/codexpro"><img alt="Upstream" src="https://img.shields.io/badge/upstream-rebel0789%2Fcodexpro-181717?style=flat-square"></a>
 </p>
 
 <p align="center">
   <a href="README.md">English</a>
-  ·
-  <a href="https://rebel0789.github.io/codexpro/zh.html">中文网站</a>
   ·
   <a href="FAQ_ZH.md">中文 FAQ</a>
   ·
@@ -26,6 +23,8 @@
 </p>
 
 ## 它是什么
+
+本仓库是 [rebel0789/codexpro](https://github.com/rebel0789/codexpro) 的个人维护 fork。保留 upstream 来源和原始许可证；本地 Git 以 `upstream` 只读同步原项目，以本仓库承载个人开发与运维增强。
 
 CodexPro 是本地 MCP server。它连接**你的 ChatGPT 会话**、**你的机器**和**你允许的仓库**。
 
@@ -41,11 +40,18 @@ ChatGPT 可以读取、搜索、编辑、审查、验证、导入附件，并写
 - 能创建自定义 MCP 插件的 ChatGPT 账号
 - ChatGPT Web 可用的 HTTPS 地址（tunnel 或 Tailscale Funnel）
 
+本维护 fork 建议直接从源码安装，保证本机 CLI 与当前仓库一致：
+
 ```bash
-npm install -g codexpro
-cd /path/to/your/repo
+git clone https://github.com/Stephenxu000/codexpro-cn.git
+cd codexpro-cn
+npm install
+npm run build
+npm link
 codexpro setup
 ```
+
+`npm install -g codexpro` 安装的是 upstream 的 npm 发行版，不包含本 fork 的本地增强。
 
 ## 在 ChatGPT 中连接
 
@@ -91,9 +97,18 @@ codexpro settings show
 codexpro start
 ```
 
-让 ChatGPT 对已允许项目执行 `open_workspace`。`open_current_workspace` 切回启动仓库。
+让 ChatGPT 对已允许项目执行 `open_workspace`。它会返回稳定的 `workspace_id`；后续操作非默认项目时显式传这个 id。`open_current_workspace` 切回启动仓库。
 
 两个 ChatGPT 账号或需要硬隔离时，用不同端口和 Server URL 跑两个 CodexPro 进程。
+
+## HTTP transport
+
+CodexPro 的唯一 `/mcp` 入口使用 MCP 2026 stateless HTTP 模型：
+
+- `/mcp` 不创建、持久化或恢复 transport session，bridge 重启后无需复活 session。
+- 升级兼容期间如果请求仍携带旧 `Mcp-Session-Id`，服务端会忽略该 header，它不会决定任何服务端状态。
+- 非默认项目状态通过稳定的显式 handle 传递，例如 `workspace_id`、`task_id`、`job_id`；省略 `workspace_id` 时只使用配置的默认 workspace。
+- `workspace_id` 由项目 canonical root 稳定派生，并持久化到仓库外的运行态目录，因此 bridge 重启后仍能解析同一个逻辑 workspace。
 
 ## 命令
 

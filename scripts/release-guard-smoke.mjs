@@ -32,7 +32,7 @@ const wrongCwd = mkdtempSync(join(tmpdir(), "codexpro-release-guard-"));
 try {
   const allowed = run(process.execPath, ["scripts/release-guard.mjs"], { cwd: root });
   assert.equal(allowed.status, 0, allowed.output);
-  assert.match(allowed.output, /CodexPro release guard: codexpro@\d+\.\d+\.\d+/);
+  assert.match(allowed.output, /CodexPro (?:release|maintenance) guard: codexpro@\d+\.\d+\.\d+/);
 
   const wrongDirectory = run(process.execPath, [join(root, "scripts/release-guard.mjs")], { cwd: wrongCwd });
   assert.notEqual(wrongDirectory.status, 0, wrongDirectory.output);

@@ -628,6 +628,7 @@ async function runBashOutputTerminationStress() {
       arguments: {
         workspace_id: opened.structuredContent.workspace_id,
         command: `${JSON.stringify(process.execPath)} -e "process.on('SIGTERM',()=>{}); setInterval(()=>process.stdout.write('x'.repeat(1024)),1)"`,
+        confirm: true,
         timeout_ms: 15000
       }
     });

@@ -164,7 +164,7 @@ Normal coding 模式下，ChatGPT 可以在配置的工作区内写入和精确�
 
 CodexPro 不能附加到、读取或复用某一个 Codex App 聊天会话或终端会话。
 
-MCP 的 `bash` 工具是在你启动的 CodexPro 本地服务器进程里，针对配置的 workspace root 执行。MCP session id 只是 ChatGPT 和 CodexPro HTTP 服务器之间的传输状态，不是 Codex 会话 id。
+MCP 的 `bash` 工具是在你启动的 CodexPro 本地服务器进程里，针对配置的 workspace root 执行。CodexPro 的 HTTP transport 已经是 stateless，不靠 MCP transport session 选择 workspace 或保存 shell 状态；显式 `workspace_id` 和可选的本地 bash session 标签也都不是 Codex 会话 id。
 
 但 CodexPro 可以要求 bash 调用带上匹配的本地 session 标签：
 
@@ -300,7 +300,7 @@ repo B: port 8788, hostname B, ChatGPT plugin URL B
 
 ## 多个 ChatGPT session 怎么避免互相覆盖？
 
-项目选择按 session 隔离。对于共享文件，先读取文件，再把返回的 SHA-256 作为 `expected_sha256` 传给 `write` 或 `edit`。如果读取之后文件已经变化，CodexPro 会拒绝操作。新文件采用原子替换；已有文件原位更新，以保留与 inode 绑定的元数据和硬链接。
+workspace identity 是显式且 stateless 的：省略 `workspace_id` 时使用配置的默认 workspace，非默认项目使用稳定的 `workspace_id`。对于共享文件，先读取文件，再把返回的 SHA-256 作为 `expected_sha256` 传给 `write` 或 `edit`。如果读取之后文件已经变化，CodexPro 会拒绝操作。新文件采用原子替换；已有文件原位更新，以保留与 inode 绑定的元数据和硬链接。
 
 这能防止旧内容静默覆盖新内容，但不会把 CodexPro 变成协同 merge server。大范围重叠修改仍建议使用独立 worktree。
 
