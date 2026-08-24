@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { CodexProConfig } from "./config.js";
 import { makeRestrictedBashEnv } from "./bashOps.js";
@@ -8,9 +9,10 @@ import { redactSensitiveText } from "./redact.js";
 import { loadModelPolicy, chooseProfile, capProfile, recordUsage, type Profile, type RequestedProfile } from "./usageOps.js";
 
 const CODEX_EXECUTABLE_CANDIDATES = [
-  "/Applications/ChatGPT.app/Contents/Resources/codex",
+  path.join(os.homedir(), ".local", "bin", "codex"),
   "/opt/homebrew/bin/codex",
-  "/usr/local/bin/codex"
+  "/usr/local/bin/codex",
+  "/Applications/ChatGPT.app/Contents/Resources/codex"
 ] as const;
 const MAX_AGENT_TIMEOUT_MS = 10 * 60_000;
 const MAX_AGENT_OUTPUT_BYTES = 24_000;
@@ -106,7 +108,7 @@ export async function runControlledCodex(config: CodexProConfig, options: AgentR
     throw new CodexProError("agent_run rejects destructive, move/rename, upload, copy, and share requests. Use a separately reviewed workflow for those operations.");
   }
   const codexExecutable = resolveCodexExecutable();
-  if (!codexExecutable) throw new CodexProError("The local Codex CLI is unavailable in the approved application paths.");
+  if (!codexExecutable) throw new CodexProError("The local Codex CLI is unavailable in the approved CLI paths.");
 
   const policy = await loadModelPolicy();
   const profileRequested = options.profile ?? policy.default_profile;
