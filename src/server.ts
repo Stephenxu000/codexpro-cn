@@ -17,6 +17,7 @@ import { reloadWhitelistedService } from "./serviceOps.js";
 import { callBaiduRead } from "./mcpReadOps.js";
 import { callBaiduOrganize } from "./mcpOrganizeOps.js";
 import { callBaiduOrganizerJob } from "./baiduOrganizerJobOps.js";
+import { callLabJob } from "./labJobOps.js";
 import { readUsage } from "./usageOps.js";
 import { finishWorkUnit, readWorkUnit, startWorkUnit } from "./workUnitOps.js";
 import { verifyChangedJs } from "./verifyOps.js";
@@ -422,6 +423,7 @@ const FULL_TOOL_NAMES = [
   "mcp_read_call",
   "mcp_organize_call",
   "baidu_organizer_job_call",
+  "lab_job_call",
   "codex_usage"
 ] as const;
 
@@ -1083,6 +1085,7 @@ const BASH_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructive
 const HANDOFF_WRITE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: false, destructiveHint: false, idempotentHint: false };
 const REMOTE_ORGANIZE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: false, idempotentHint: false };
 const BAIDU_JOB_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: false, idempotentHint: false };
+const LAB_JOB_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true, destructiveHint: false, idempotentHint: false };
 
 export function createCodexProServer(config: CodexProConfig): McpServer {
   const workspaces = new WorkspaceManager(config);
@@ -1346,6 +1349,30 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         status: created.task.status,
         workspace_id: workspace.id,
         workspace: workspace.root
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "lab_job_call",
+    {
+      title: "Lab Job",
+      description: "Call one strictly job-scoped Dogfood Lab action. The Lab service owns the job type, action allowlist, expiry, user binding, and any device/path policy. This tool does not expose generic ServerAdmin or filesystem access.",
+      inputSchema: {
+        job_id: z.string().regex(/^[a-f0-9]{16}$/),
+        action: z.string().trim().min(1).max(64),
+        args: z.record(z.string(), z.unknown()).optional()
+      },
+      annotations: LAB_JOB_ANNOTATIONS
+    },
+    async (args) => {
+      const result = await callLabJob(args.job_id, args.action, args.args ?? {});
+      return textResult(`# Lab Job\n\nJob: ${result.job_id}\nAction: ${result.action}\n\n${JSON.stringify(result.result)}`, {
+        job_id: result.job_id,
+        action: result.action,
+        result: result.result
       });
     }
   );
