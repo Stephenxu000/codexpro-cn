@@ -10,6 +10,8 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_STATE_ROOT = path.join(os.homedir(), "Library", "Application Support", "CodexPro");
 const DEFAULT_BEGIN_TIMEOUT_MS = 15_000;
 const DEFAULT_COMPLETE_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_STALE_SESSION_MS = 2 * 60 * 60_000;
+const MAX_MODEL_CONTEXT_CHARS = 7_000;
 const MAX_ADR_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 export type AdrHostPresentation = {
@@ -24,11 +26,13 @@ export type AdrHostCompletion = {
   outcome?: string;
   presentation?: AdrHostPresentation;
   error?: string;
+  recoveredStale?: boolean;
 };
 
 export type AdrHostBegin = {
   status: "tracked" | "existing" | "passthrough" | "unavailable";
   error?: string;
+  modelContext?: string;
 };
 
 export type AdrHostMutationHint = {
@@ -42,6 +46,7 @@ type PersistedSession = {
   root: string;
   sessionId: string;
   startedAt: string;
+  lastMutationAt?: string;
 };
 
 type PersistedState = {
@@ -60,12 +65,19 @@ export type AdrHostOrchestratorOptions = {
   hostId?: string;
   beginTimeoutMs?: number;
   completeTimeoutMs?: number;
+  staleSessionMs?: number;
   env?: NodeJS.ProcessEnv;
 };
 
 function safeError(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`.slice(0, 1200);
   return String(error).slice(0, 1200);
+}
+
+function boundedText(value: string, maxChars = MAX_MODEL_CONTEXT_CHARS): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, maxChars - 32))}\n...[ADR context truncated]`;
 }
 
 function defaultAdrBin(): string {
@@ -207,6 +219,7 @@ export class AdrHostOrchestrator {
   private readonly hostId: string;
   private readonly beginTimeoutMs: number;
   private readonly completeTimeoutMs: number;
+  private readonly staleSessionMs: number;
   private readonly env: NodeJS.ProcessEnv;
 
   constructor(options: AdrHostOrchestratorOptions = {}) {
@@ -218,6 +231,7 @@ export class AdrHostOrchestrator {
     this.hostId = options.hostId ?? "codexpro-mcp";
     this.beginTimeoutMs = options.beginTimeoutMs ?? DEFAULT_BEGIN_TIMEOUT_MS;
     this.completeTimeoutMs = options.completeTimeoutMs ?? DEFAULT_COMPLETE_TIMEOUT_MS;
+    this.staleSessionMs = Math.max(60_000, options.staleSessionMs ?? DEFAULT_STALE_SESSION_MS);
     this.env = adrChildEnv(process.env, options.env);
   }
 
@@ -264,13 +278,60 @@ export class AdrHostOrchestrator {
     return { stdout: String(result.stdout ?? ""), stderr: String(result.stderr ?? "") };
   }
 
+  private sessionIsStale(session: PersistedSession, now = Date.now()): boolean {
+    const last = Date.parse(session.lastMutationAt ?? session.startedAt);
+    return Number.isFinite(last) && now - last >= this.staleSessionMs;
+  }
+
+  private async completeLocked(
+    workspace: Workspace,
+    status: "succeeded" | "failed" | "cancelled",
+    recoveredStale = false
+  ): Promise<AdrHostCompletion> {
+    const state = await this.readState();
+    const current = state.sessions[workspace.id];
+    if (!current || path.resolve(current.root) !== path.resolve(workspace.root)) return { status: "idle" };
+
+    const result = await this.runAdr(
+      workspace,
+      ["host-complete", "--session", current.sessionId, "--status", status, "--locale", "zh-CN", "--json"],
+      this.completeTimeoutMs
+    );
+    const payload = parseJsonObject(result.stdout);
+    const presentation = parsePresentation(payload.presentation);
+    const outcome = typeof payload.status === "string" ? payload.status : undefined;
+    await this.writeState((next) => {
+      delete next.sessions[workspace.id];
+    });
+    return {
+      status: "completed",
+      ...(outcome ? { outcome } : {}),
+      ...(presentation ? { presentation } : {}),
+      ...(recoveredStale ? { recoveredStale: true } : {})
+    };
+  }
+
   async beforeMutation(workspace: Workspace, hint: AdrHostMutationHint): Promise<AdrHostBegin> {
     let release: (() => Promise<void>) | undefined;
+    let hadTrackedSession = false;
     try {
       release = await acquireProcessLock(this.workspaceLockPath(workspace));
       const state = await this.readState();
       const current = state.sessions[workspace.id];
-      if (current && path.resolve(current.root) === path.resolve(workspace.root)) return { status: "existing" };
+      hadTrackedSession = Boolean(current && path.resolve(current.root) === path.resolve(workspace.root));
+      if (current && path.resolve(current.root) === path.resolve(workspace.root)) {
+        if (this.sessionIsStale(current)) {
+          await this.completeLocked(workspace, "cancelled", true);
+          hadTrackedSession = false;
+        } else {
+          const now = new Date().toISOString();
+          await this.writeState((next) => {
+            const existing = next.sessions[workspace.id];
+            if (existing && path.resolve(existing.root) === path.resolve(workspace.root)) existing.lastMutationAt = now;
+          });
+          return { status: "existing" };
+        }
+      }
 
       if (current) {
         await this.writeState((next) => {
@@ -286,20 +347,24 @@ export class AdrHostOrchestrator {
       const payload = parseJsonObject(result.stdout);
       const status = typeof payload.status === "string" ? payload.status : "";
       const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
+      const modelContext = typeof payload.modelContext === "string" ? boundedText(payload.modelContext) : "";
       if (status === "tracked" && sessionId) {
+        const now = new Date().toISOString();
         const record: PersistedSession = {
           workspaceId: workspace.id,
           root: workspace.root,
           sessionId,
-          startedAt: new Date().toISOString()
+          startedAt: now,
+          lastMutationAt: now
         };
         await this.writeState((next) => {
           next.sessions[workspace.id] = record;
         });
-        return { status: "tracked" };
+        return { status: "tracked", ...(modelContext ? { modelContext } : {}) };
       }
       return { status: "passthrough" };
     } catch (error) {
+      if (hadTrackedSession) throw error;
       return { status: "unavailable", error: safeError(error) };
     } finally {
       if (release) await release();
@@ -310,22 +375,24 @@ export class AdrHostOrchestrator {
     let release: (() => Promise<void>) | undefined;
     try {
       release = await acquireProcessLock(this.workspaceLockPath(workspace));
+      return await this.completeLocked(workspace, status);
+    } catch (error) {
+      return { status: "unavailable", error: safeError(error) };
+    } finally {
+      if (release) await release();
+    }
+  }
+
+  async recoverStale(workspace: Workspace): Promise<AdrHostCompletion> {
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await acquireProcessLock(this.workspaceLockPath(workspace));
       const state = await this.readState();
       const current = state.sessions[workspace.id];
-      if (!current || path.resolve(current.root) !== path.resolve(workspace.root)) return { status: "idle" };
-
-      const result = await this.runAdr(
-        workspace,
-        ["host-complete", "--session", current.sessionId, "--status", status, "--locale", "zh-CN", "--json"],
-        this.completeTimeoutMs
-      );
-      const payload = parseJsonObject(result.stdout);
-      const presentation = parsePresentation(payload.presentation);
-      const outcome = typeof payload.status === "string" ? payload.status : undefined;
-      await this.writeState((next) => {
-        delete next.sessions[workspace.id];
-      });
-      return { status: "completed", ...(outcome ? { outcome } : {}), ...(presentation ? { presentation } : {}) };
+      if (!current || path.resolve(current.root) !== path.resolve(workspace.root) || !this.sessionIsStale(current)) {
+        return { status: "idle" };
+      }
+      return await this.completeLocked(workspace, "cancelled", true);
     } catch (error) {
       return { status: "unavailable", error: safeError(error) };
     } finally {
@@ -340,10 +407,45 @@ export class AdrHostOrchestrator {
   }
 }
 
+export function decorateAdrHostMutationResult(result: any, begin: AdrHostBegin | undefined): any {
+  if (!begin || (begin.status !== "tracked" && begin.status !== "existing")) return result;
+  const contextText = begin.status === "tracked" && begin.modelContext ? begin.modelContext.trim() : "";
+  const lifecycleHint = "ADR Host 已跟踪本轮改动；在向用户报告完成前调用 show_changes，以执行可信验证并输出收敛结果。";
+  const injectedText = contextText
+    ? `${lifecycleHint}\n\n## ADR Project Context for subsequent steps\n\n${contextText}`
+    : lifecycleHint;
+  const content = Array.isArray(result?.content) ? [...result.content] : [];
+  const textIndex = content.findIndex((item) => item && item.type === "text" && typeof item.text === "string");
+  if (textIndex >= 0) content[textIndex] = { ...content[textIndex], text: `${content[textIndex].text}\n\n${injectedText}` };
+  else content.push({ type: "text", text: injectedText });
+  const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
+    ? result.structuredContent
+    : {};
+  return {
+    ...result,
+    content,
+    structuredContent: {
+      ...structured,
+      adr_host: {
+        status: begin.status,
+        tracking: true,
+        completion_tool: "show_changes",
+        ...(contextText ? { context_injected: true } : {})
+      }
+    }
+  };
+}
+
 export function decorateAdrHostResult(result: any, completion: AdrHostCompletion | undefined): any {
   if (!completion || completion.status === "idle") return result;
   const presentation = completion.presentation;
-  const visibleText = presentation?.visibility === "show" ? presentation.text.trim() : "";
+  const visibleText = presentation?.visibility === "show"
+    ? presentation.text.trim()
+    : completion.status === "unavailable"
+      ? `ADR ⚠ 收敛验证不可用：${completion.error ?? "unknown error"}`
+      : completion.recoveredStale
+        ? "ADR · 已将长期未收尾的旧 Work Session 按 cancelled 回收；未将其冒充为已验证完成。"
+        : "";
   const content = Array.isArray(result?.content) ? [...result.content] : [];
   if (visibleText) {
     const textIndex = content.findIndex((item) => item && item.type === "text" && typeof item.text === "string");
@@ -361,6 +463,8 @@ export function decorateAdrHostResult(result: any, completion: AdrHostCompletion
       adr_host: {
         status: completion.status,
         outcome: completion.outcome ?? null,
+        ...(completion.error ? { error: completion.error } : {}),
+        ...(completion.recoveredStale ? { recovered_stale: true } : {}),
         ...(presentation ? { presentation } : {})
       }
     }

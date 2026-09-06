@@ -9,7 +9,7 @@ import { readTextFile, repoTree, ensureAiBridge } from "./fsOps.js";
 import { gitDiff, gitLog, gitStatus } from "./gitOps.js";
 import { discoverSkillInventory } from "./capabilitiesOps.js";
 import type { SkillInventoryItem } from "./capabilitiesOps.js";
-import { detectExternalBrain, type ExternalBrainProbe } from "./externalBrainOps.js";
+import { loadExternalBrainOrientation, type ExternalBrainProbe } from "./externalBrainOps.js";
 
 export interface WorkspaceSummary {
   text: string;
@@ -23,6 +23,7 @@ export interface WorkspaceSummary {
   tree?: string;
   gitStatus: string;
   externalBrain: ExternalBrainProbe;
+  externalBrainContext?: string;
 }
 
 export interface CodexContext {
@@ -34,6 +35,8 @@ export interface CodexContext {
   aiContextFiles: string[];
   gitStatus?: string;
   gitDiff?: string;
+  externalBrain: ExternalBrainProbe;
+  externalBrainContext?: string;
 }
 
 function unique(values: string[]): string[] {
@@ -161,7 +164,8 @@ export async function workspaceSummary(
     : [];
   const skills = skillInventory.map((skill) => skill.name);
   const counts = skillCounts(skillInventory);
-  const externalBrain = await detectExternalBrain(workspace);
+  const externalBrainOrientation = await loadExternalBrainOrientation(workspace, { maxContextChars: 2_800 });
+  const externalBrain = externalBrainOrientation.probe;
   const agentsPath = await findAgentsFile(workspace);
   let agentsText = "AGENTS.md: none loaded";
   if (agentsPath) {
@@ -184,12 +188,17 @@ export async function workspaceSummary(
   const skillText = options.includeSkills
     ? `Skills: ${counts.total} total (${counts.workspace ?? 0} workspace, ${counts.user ?? 0} user, ${counts.plugin ?? 0} plugin, ${counts.other ?? 0} other).`
     : "Skills: skipped. Pass include_skills=true if skill discovery is needed.";
-  const externalBrainText = externalBrain.status === "detected"
-    ? `External brain: ADR detected via ${externalBrain.binding}; local agent tasks will use it automatically when useful.`
-    : externalBrain.status === "unavailable" && externalBrain.binding
-      ? `External brain: ADR binding detected but unavailable [${externalBrain.reasonCode ?? "unknown"}]. CodexPro continues without it.`
-      : "";
-  const text = `# Workspace\n\nWorkspace: ${workspace.id}\nRoot: ${workspace.root}\nBash mode: ${config.bashMode}\nWrite mode: ${config.writeMode}\nTool mode: ${config.toolMode}\n\n${agentsText}\n${skillText}${externalBrainText ? `\n${externalBrainText}` : ""}\n\n## Git status\n\n${status}\n\n## Recent commits\n\n${log}\n${treeText ? `\n## Files\n\n${treeText}` : ""}`;
+  const externalBrainText = externalBrainOrientation.used
+    ? `ADR project context: loaded ${externalBrainOrientation.materialCount} material(s) via ${externalBrain.binding}; stages=${externalBrainOrientation.stages.join(", ") || "context"}.`
+    : externalBrain.status === "detected"
+      ? `ADR project identity detected via ${externalBrain.binding}, but no bounded orientation material was available.`
+      : externalBrain.status === "unavailable" && externalBrain.binding
+        ? `ADR project binding detected but unavailable [${externalBrain.reasonCode ?? "unknown"}]. CodexPro continues without it.`
+        : "";
+  const orientationText = externalBrainOrientation.used
+    ? `\n\n## ADR Project Orientation\n\n${externalBrainOrientation.text}`
+    : "";
+  const text = `# Workspace\n\nWorkspace: ${workspace.id}\nRoot: ${workspace.root}\nBash mode: ${config.bashMode}\nWrite mode: ${config.writeMode}\nTool mode: ${config.toolMode}\n\n${agentsText}\n${skillText}${externalBrainText ? `\n${externalBrainText}` : ""}${orientationText}\n\n## Git status\n\n${status}\n\n## Recent commits\n\n${log}\n${treeText ? `\n## Files\n\n${treeText}` : ""}`;
 
   return {
     text,
@@ -202,7 +211,8 @@ export async function workspaceSummary(
     skillCounts: counts,
     tree: treeText,
     gitStatus: status,
-    externalBrain
+    externalBrain,
+    ...(externalBrainOrientation.used ? { externalBrainContext: externalBrainOrientation.text } : {})
   };
 }
 
@@ -264,6 +274,7 @@ export async function readCodexContext(
   const ai = options.includeAiBridge === false
     ? { text: "Skipped by request.", files: [] }
     : await readAiBridgeContext(config, guard, workspace);
+  const externalBrainOrientation = await loadExternalBrainOrientation(workspace, { maxContextChars: 2_800 });
   const status = options.includeGit === false ? undefined : gitStatus(config, workspace);
   const diff = options.includeDiff ? gitDiff(config, guard, workspace) : undefined;
 
@@ -276,6 +287,9 @@ export async function readCodexContext(
     `Bash mode: ${config.bashMode}`,
     `Write mode: ${config.writeMode}`,
     `Tool mode: ${config.toolMode}`,
+    ...(externalBrainOrientation.used
+      ? ["", "## ADR Project Orientation", "", externalBrainOrientation.text]
+      : []),
     "",
     "## AGENTS Instructions",
     "",
@@ -296,6 +310,8 @@ export async function readCodexContext(
     agentsFiles: agents.files,
     aiContextFiles: ai.files,
     gitStatus: status,
-    gitDiff: diff
+    gitDiff: diff,
+    externalBrain: externalBrainOrientation.probe,
+    ...(externalBrainOrientation.used ? { externalBrainContext: externalBrainOrientation.text } : {})
   };
 }

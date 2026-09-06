@@ -53,7 +53,7 @@ const fakeAdr = path.join(root, 'fake-adr');
 const logPath = path.join(root, 'fake.log');
 await fs.mkdir(workspace, { recursive: true });
 await fs.writeFile(path.join(workspace, 'demo.txt'), 'before\n', 'utf8');
-await fs.writeFile(fakeAdr, `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ADR_FAKE_LOG,JSON.stringify(args)+'\\n');\nif(args[0]==='host-begin'){process.stdout.write(JSON.stringify({status:'tracked',sessionId:'chg.server-smoke'}));process.exit(0)}\nif(args[0]==='host-complete'){process.stdout.write(JSON.stringify({status:'converged',presentation:{visibility:'show',impact:'assurance',slot:'completion',text:'ADR ✓ host lifecycle smoke'}}));process.exit(0)}\nprocess.exit(2)\n`, { mode: 0o755 });
+await fs.writeFile(fakeAdr, `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ADR_FAKE_LOG,JSON.stringify(args)+'\\n');\nif(args[0]==='host-begin'){process.stdout.write(JSON.stringify({status:'tracked',sessionId:'chg.server-smoke',modelContext:'# ADR Project Context\\n\\nserver-smoke-context'}));process.exit(0)}\nif(args[0]==='host-complete'){process.stdout.write(JSON.stringify({status:'converged',presentation:{visibility:'show',impact:'assurance',slot:'completion',text:'ADR ✓ host lifecycle smoke'}}));process.exit(0)}\nprocess.exit(2)\n`, { mode: 0o755 });
 await fs.chmod(fakeAdr, 0o755);
 
 const env = {
@@ -74,6 +74,9 @@ try {
   const workspaceId = opened.structuredContent.workspace_id;
   const edited = await client.request('tools/call', { name: 'edit', arguments: { workspace_id: workspaceId, path: 'demo.txt', old_text: 'before', new_text: 'after' } });
   if (edited.isError) throw new Error(`edit failed: ${JSON.stringify(edited)}`);
+  if (edited.structuredContent.adr_host?.context_injected !== true) throw new Error('edit did not expose ADR context injection');
+  const editText = edited.content?.find((item) => item.type === 'text')?.text ?? '';
+  if (!editText.includes('server-smoke-context') || !editText.includes('show_changes')) throw new Error('edit did not return ADR context + completion instruction to the model');
   const stateAfterEdit = JSON.parse(await fs.readFile(path.join(stateRoot, 'adr-host-sessions.json'), 'utf8'));
   if (!stateAfterEdit.sessions?.[workspaceId]) throw new Error('edit did not persist an ADR host session');
 

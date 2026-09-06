@@ -31,7 +31,7 @@ import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidg
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
 import { TOOL_SCHEMA_VERSION } from "./toolSchema.js";
-import { createAdrHostOrchestrator, decorateAdrHostResult } from "./adrHostOps.js";
+import { createAdrHostOrchestrator, decorateAdrHostMutationResult, decorateAdrHostResult } from "./adrHostOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -1505,20 +1505,39 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.workdir ?? ".");
       const workspaceWrite = (args.mode ?? "read_only") === "workspace_write";
-      if (workspaceWrite) await adrHost.beforeMutation(workspace, { tool: "agent_run", task: args.task });
+      const adrBegin = workspaceWrite
+        ? await adrHost.beforeMutation(workspace, { tool: "agent_run", task: args.task })
+        : undefined;
+      let effectiveTask = String(args.task);
+      let adrContextUsed = false;
+      if (adrBegin?.modelContext) {
+        effectiveTask = `${effectiveTask}\n\n---\n\n${adrBegin.modelContext}`;
+        adrContextUsed = true;
+      } else {
+        const externalBrain = await enrichTaskWithExternalBrain(workspace, effectiveTask);
+        if (externalBrain.used) {
+          effectiveTask = externalBrain.task;
+          adrContextUsed = true;
+        }
+      }
       const result = await runControlledCodex(config, {
-        task: args.task,
+        task: effectiveTask,
         cwd: resolved.absPath,
         timeoutMs: args.timeout_ms,
         mode: (args.mode ?? "read_only") as AgentRunMode,
         profile: args.profile,
         maxProfile: args.max_profile
       });
-      const text = ["# Controlled Codex Run", "", `Status: ${result.status}`, `Mode: ${result.mode}`, `Profile: ${result.profileUsed}`, `Model: ${result.modelUsed ?? "unknown"}`, `Exit: ${result.exitCode ?? "none"}${result.signal ? ` (${result.signal})` : ""}`, `Duration: ${result.durationMs} ms`, `Tokens: ${result.usage.total_tokens ?? "unknown"}`, `Credits: ${result.usage.accuracy === "exact" ? "" : "≈"}${result.usage.credits ?? "unknown"}`, "", "## Redacted output", "", result.output].join("\n");
-      const response = textResult(text, { status: result.status, mode: result.mode, profile_requested: result.profileRequested, profile_used: result.profileUsed, model_used: result.modelUsed, fallback_count: result.fallbackCount, exit_code: result.exitCode, signal: result.signal, duration_ms: result.durationMs, usage: result.usage, output: result.output, truncated: result.truncated });
+      const contextNote = adrContextUsed ? "ADR project context: injected into this Agent run." : "ADR project context: not available for this Agent run.";
+      const text = ["# Controlled Codex Run", "", `Status: ${result.status}`, `Mode: ${result.mode}`, `Profile: ${result.profileUsed}`, `Model: ${result.modelUsed ?? "unknown"}`, `Exit: ${result.exitCode ?? "none"}${result.signal ? ` (${result.signal})` : ""}`, `Duration: ${result.durationMs} ms`, `Tokens: ${result.usage.total_tokens ?? "unknown"}`, `Credits: ${result.usage.accuracy === "exact" ? "" : "≈"}${result.usage.credits ?? "unknown"}`, contextNote, "", "## Redacted output", "", result.output].join("\n");
+      const response = textResult(text, { status: result.status, mode: result.mode, profile_requested: result.profileRequested, profile_used: result.profileUsed, model_used: result.modelUsed, fallback_count: result.fallbackCount, exit_code: result.exitCode, signal: result.signal, duration_ms: result.durationMs, usage: result.usage, output: result.output, truncated: result.truncated, adr_context_used: adrContextUsed });
       if (!workspaceWrite) return response;
       const completionStatus = result.status === "completed" ? "succeeded" : result.status === "timed_out" ? "cancelled" : "failed";
-      return decorateAdrHostResult(response, await adrHost.complete(workspace, completionStatus));
+      const completion = await adrHost.complete(workspace, completionStatus);
+      if (completion.status === "unavailable") {
+        throw new CodexProError(`ADR Host completion failed after tracked agent_run: ${completion.error ?? "unknown error"}`);
+      }
+      return decorateAdrHostResult(response, completion);
     }
   );
 
@@ -2015,6 +2034,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         tree: summary.tree,
         git_status: summary.gitStatus,
         external_brain: summary.externalBrain,
+        external_brain_context: summary.externalBrainContext,
         bash_mode: config.bashMode,
         write_mode: config.writeMode,
         tool_mode: config.toolMode
@@ -2071,6 +2091,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         tree: summary.tree,
         git_status: summary.gitStatus,
         external_brain: summary.externalBrain,
+        external_brain_context: summary.externalBrainContext,
         bash_mode: config.bashMode,
         write_mode: config.writeMode,
         tool_mode: config.toolMode
@@ -2121,6 +2142,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         tree: summary.tree,
         git_status: summary.gitStatus,
         external_brain: summary.externalBrain,
+        external_brain_context: summary.externalBrainContext,
         ai_context_files: ai.files,
         bash_mode: config.bashMode,
         write_mode: config.writeMode,
@@ -2474,7 +2496,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.path, { forWrite: true });
       assertWriteToolAllowed(config, resolved.relPath);
-      await adrHost.beforeMutation(workspace, { tool: "write", paths: [resolved.relPath] });
+      const adrBegin = await adrHost.beforeMutation(workspace, { tool: "write", paths: [resolved.relPath] });
       const result = await writeTextFile(config, guard, workspace, args.path, String(args.content ?? ""), {
         createDirs: args.create_dirs !== false,
         overwrite: args.overwrite !== false,
@@ -2482,7 +2504,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       });
       if (result.diff.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = `# Write File\n\nPath: ${result.path}\nExisted before: ${result.existed}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}${diffBlock(result.diff.diff)}`;
-      return textResult(text, {
+      return decorateAdrHostMutationResult(textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
         path: result.path,
@@ -2492,7 +2514,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         additions: result.diff.additions,
         deletions: result.diff.deletions,
         diff: result.diff.diff
-      });
+      }), adrBegin);
     }
   );
 
@@ -2523,7 +2545,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.path, { forWrite: true });
       assertWriteToolAllowed(config, resolved.relPath);
-      await adrHost.beforeMutation(workspace, { tool: "edit", paths: [resolved.relPath] });
+      const adrBegin = await adrHost.beforeMutation(workspace, { tool: "edit", paths: [resolved.relPath] });
       const result = await editTextFile(config, guard, workspace, args.path, String(args.old_text ?? ""), String(args.new_text ?? ""), {
         replaceAll: parseBool(args.replace_all, false),
         expectedReplacements: args.expected_replacements,
@@ -2531,7 +2553,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       });
       if (result.diff.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = `# Edit File\n\nPath: ${result.path}\nReplacements: ${result.replacements}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\nDiff stats: +${result.diff.additions} -${result.diff.deletions}${diffBlock(result.diff.diff)}`;
-      return textResult(text, {
+      return decorateAdrHostMutationResult(textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
         path: result.path,
@@ -2541,7 +2563,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         additions: result.diff.additions,
         deletions: result.diff.deletions,
         diff: result.diff.diff
-      });
+      }), adrBegin);
     }
   );
 
@@ -2566,7 +2588,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      await adrHost.beforeMutation(workspace, { tool: "apply_patch" });
+      const adrBegin = await adrHost.beforeMutation(workspace, { tool: "apply_patch" });
       const result = await applyWorkspacePatch(config, guard, workspace, String(args.patch ?? ""));
       if (result.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = [
@@ -2577,7 +2599,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         result.stderr ? `stderr: ${result.stderr}` : "",
         result.diff ? diffBlock(result.diff) : "No diff output."
       ].filter(Boolean).join("\n");
-      return textResult(text, {
+      return decorateAdrHostMutationResult(textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
         paths: result.paths,
@@ -2587,7 +2609,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         deletions: result.deletions,
         changed: result.changed,
         diff: result.diff
-      });
+      }), adrBegin);
     }
   );
 
@@ -2625,7 +2647,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.destination, { forWrite: true });
       assertWriteToolAllowed(config, resolved.relPath);
-      await adrHost.beforeMutation(workspace, { tool: "import_file", paths: [resolved.relPath] });
+      const adrBegin = await adrHost.beforeMutation(workspace, { tool: "import_file", paths: [resolved.relPath] });
       const result = await importAttachmentFile(config, guard, workspace, {
         file: args.file,
         destination: String(args.destination ?? ""),
@@ -2645,7 +2667,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         `Verified: ${result.verified}`,
         `Overwritten: ${result.overwritten}`
       ].join("\n");
-      return textResult(text, {
+      return decorateAdrHostMutationResult(textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
         path: result.path,
@@ -2658,7 +2680,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         file_id: result.file_id,
         file_name: result.file_name,
         overwritten: result.overwritten
-      });
+      }), adrBegin);
     }
   );
 
@@ -2719,7 +2741,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      if (args.confirm === true) await adrHost.beforeMutation(workspace, { tool: "bash" });
+      const adrBegin = args.confirm === true ? await adrHost.beforeMutation(workspace, { tool: "bash" }) : undefined;
       const result = await runBash(config, guard, workspace, String(args.command ?? ""), {
         cwd: args.cwd,
         timeoutMs: args.timeout_ms,
@@ -2727,7 +2749,10 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         confirm: args.confirm === true
       });
       const text = bashTextResult(config, result);
-      return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result, bash_session_id: result.bashSessionId ?? null });
+      return decorateAdrHostMutationResult(
+        textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result, bash_session_id: result.bashSessionId ?? null }),
+        adrBegin
+      );
     }
   );
 
@@ -2921,6 +2946,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const adrCompletion = await adrHost.complete(workspace);
+      if (adrCompletion.status === "unavailable") {
+        throw new CodexProError(`ADR Host completion failed; commit blocked to preserve tracked-session evidence integrity: ${adrCompletion.error ?? "unknown error"}`);
+      }
       const result = gitCommit(config, workspace, args.message);
       return decorateAdrHostResult(
         textResult(gitActionText("Git Commit", result), { workspace_id: workspace.id, root: workspace.root, ...result }),
@@ -3367,6 +3395,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         target_path: context.targetPath,
         agents_files: context.agentsFiles,
         ai_context_files: context.aiContextFiles,
+        external_brain: context.externalBrain,
+        external_brain_context: context.externalBrainContext,
         included_git_status: context.gitStatus !== undefined,
         included_git_diff: context.gitDiff !== undefined,
         preview: previewText(context.text)

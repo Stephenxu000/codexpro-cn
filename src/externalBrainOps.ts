@@ -9,8 +9,10 @@ const DEFAULT_PROBE_TIMEOUT_MS = 2_500;
 const DEFAULT_COMPILE_TIMEOUT_MS = 12_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 512_000;
 const DEFAULT_MAX_CONTEXT_CHARS = 7_000;
+const DEFAULT_ORIENTATION_CONTEXT_CHARS = 2_800;
 const DEFAULT_MAX_AGENT_TASK_CHARS = 15_500;
 const DEFAULT_CACHE_TTL_MS = 5_000;
+const ORIENTATION_TASK = "Orient a coding agent to this project. Surface durable rules, architecture boundaries, current constraints, and high-signal repository context. Prefer trusted project facts over generic advice; do not speculate.";
 
 export type ExternalBrainStatus = "absent" | "detected" | "ready" | "unavailable";
 export type ExternalBrainReasonCode =
@@ -31,6 +33,15 @@ export interface ExternalBrainProbe {
 
 export interface ExternalBrainEnhancement {
   task: string;
+  used: boolean;
+  probe: ExternalBrainProbe;
+  materialCount: number;
+  stages: readonly string[];
+  compilationStatus?: string;
+}
+
+export interface ExternalBrainContextBundle {
+  text: string;
   used: boolean;
   probe: ExternalBrainProbe;
   materialCount: number;
@@ -365,21 +376,21 @@ export async function probeExternalBrain(
   return probe;
 }
 
-export async function enrichTaskWithExternalBrain(
+async function compileExternalBrainContext(
   workspace: Workspace,
   task: string,
-  options: AdrExternalBrainOptions = {}
-): Promise<ExternalBrainEnhancement> {
-  const original = task.trim();
+  maxContextChars: number,
+  options: AdrExternalBrainOptions
+): Promise<ExternalBrainContextBundle> {
   const detected = await detectExternalBrain(workspace, options);
   if (detected.status !== "detected" || !detected.binding) {
-    return { task: original, used: false, probe: detected, materialCount: 0, stages: [] };
+    return { text: "", used: false, probe: detected, materialCount: 0, stages: [] };
   }
 
   const executable = resolveAdrExecutable(options.executable);
   if (!executable) {
     return {
-      task: original,
+      text: "",
       used: false,
       probe: unavailable(detected.binding, "cli-unavailable"),
       materialCount: 0,
@@ -387,15 +398,6 @@ export async function enrichTaskWithExternalBrain(
     };
   }
 
-  const maxTaskChars = clamp(options.maxAgentTaskChars, DEFAULT_MAX_AGENT_TASK_CHARS, 2_000, 64_000);
-  const remainingTaskBudget = Math.max(0, maxTaskChars - original.length - 80);
-  if (remainingTaskBudget < 800) {
-    return { task: original, used: false, probe: detected, materialCount: 0, stages: [] };
-  }
-  const maxContextChars = Math.min(
-    remainingTaskBudget,
-    clamp(options.maxContextChars, DEFAULT_MAX_CONTEXT_CHARS, 800, 24_000)
-  );
   const runner = options.runner ?? defaultRunner;
   const result = await runner(
     executable,
@@ -404,7 +406,7 @@ export async function enrichTaskWithExternalBrain(
       "--mode",
       "light",
       "--task",
-      original.slice(0, 4_000),
+      task.trim().slice(0, 4_000),
       "--json"
     ],
     {
@@ -415,7 +417,7 @@ export async function enrichTaskWithExternalBrain(
   );
   if (result.exitCode !== 0 && !result.stdout.trim()) {
     return {
-      task: original,
+      text: "",
       used: false,
       probe: commandFailure(detected.binding, result),
       materialCount: 0,
@@ -427,20 +429,69 @@ export async function enrichTaskWithExternalBrain(
   const rendered = renderCompilation(machineResult, maxContextChars);
   if (!ready || !rendered || rendered.materialCount === 0) {
     return {
-      task: original,
+      text: "",
       used: false,
       probe: ready ?? unavailable(detected.binding, "invalid-output"),
       materialCount: 0,
       stages: []
     };
   }
-
   return {
-    task: `${original}\n\n---\n\n${rendered.text}`,
+    text: rendered.text,
     used: true,
     probe: ready,
     materialCount: rendered.materialCount,
     stages: rendered.stages,
     ...(rendered.compilationStatus ? { compilationStatus: rendered.compilationStatus } : {})
+  };
+}
+
+export async function loadExternalBrainOrientation(
+  workspace: Workspace,
+  options: AdrExternalBrainOptions = {}
+): Promise<ExternalBrainContextBundle> {
+  const maxContextChars = clamp(
+    options.maxContextChars,
+    DEFAULT_ORIENTATION_CONTEXT_CHARS,
+    800,
+    6_000
+  );
+  return compileExternalBrainContext(workspace, ORIENTATION_TASK, maxContextChars, options);
+}
+
+export async function enrichTaskWithExternalBrain(
+  workspace: Workspace,
+  task: string,
+  options: AdrExternalBrainOptions = {}
+): Promise<ExternalBrainEnhancement> {
+  const original = task.trim();
+  const maxTaskChars = clamp(options.maxAgentTaskChars, DEFAULT_MAX_AGENT_TASK_CHARS, 2_000, 64_000);
+  const remainingTaskBudget = Math.max(0, maxTaskChars - original.length - 80);
+  if (remainingTaskBudget < 800) {
+    const detected = await detectExternalBrain(workspace, options);
+    return { task: original, used: false, probe: detected, materialCount: 0, stages: [] };
+  }
+  const maxContextChars = Math.min(
+    remainingTaskBudget,
+    clamp(options.maxContextChars, DEFAULT_MAX_CONTEXT_CHARS, 800, 24_000)
+  );
+  const compiled = await compileExternalBrainContext(workspace, original, maxContextChars, options);
+  if (!compiled.used) {
+    return {
+      task: original,
+      used: false,
+      probe: compiled.probe,
+      materialCount: 0,
+      stages: [],
+      ...(compiled.compilationStatus ? { compilationStatus: compiled.compilationStatus } : {})
+    };
+  }
+  return {
+    task: `${original}\n\n---\n\n${compiled.text}`,
+    used: true,
+    probe: compiled.probe,
+    materialCount: compiled.materialCount,
+    stages: compiled.stages,
+    ...(compiled.compilationStatus ? { compilationStatus: compiled.compilationStatus } : {})
   };
 }

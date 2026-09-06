@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { detectExternalBrain, enrichTaskWithExternalBrain, probeExternalBrain } from "../dist/externalBrainOps.js";
+import { detectExternalBrain, enrichTaskWithExternalBrain, loadExternalBrainOrientation, probeExternalBrain } from "../dist/externalBrainOps.js";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexpro-external-brain-"));
 const workspace = { id: "ws_external_brain_smoke", root, openedAt: new Date().toISOString() };
@@ -120,6 +120,12 @@ try {
   assert.equal(ready.projectId, "example.product");
   assert.equal(ready.binding, "central-registry");
   assert.deepEqual(ready.capabilities, ["knowledge-index", "repo-map", "symbol-overview"]);
+
+  const orientation = await loadExternalBrainOrientation(workspace, { executable, runner, cacheTtlMs: 0, maxContextChars: 2_800 });
+  assert.equal(orientation.used, true);
+  assert.equal(orientation.materialCount, 2);
+  assert.match(orientation.text, /preserve the stable service boundary/);
+  assert.match(orientation.text, /ServiceBoundary/);
 
   const callsBeforeEnhancement = calls;
   const enhanced = await enrichTaskWithExternalBrain(workspace, "Refactor the service boundary", {
