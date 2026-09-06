@@ -9,7 +9,7 @@ const workspaceRoot = path.join(root, 'workspace');
 const fakeAdr = path.join(root, 'fake-adr');
 const fakeLog = path.join(root, 'fake-adr.log');
 await fs.mkdir(workspaceRoot, { recursive: true });
-await fs.writeFile(fakeAdr, `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nfs.appendFileSync(process.env.ADR_FAKE_LOG, JSON.stringify(args)+'\\n');\nif(args[0]==='host-begin'){process.stdout.write(JSON.stringify({schemaVersion:1,command:'host-begin',status:'tracked',sessionId:'chg.fake'}));process.exit(0);}\nif(args[0]==='host-complete'){process.stdout.write(JSON.stringify({schemaVersion:1,command:'host-complete',status:'converged',presentation:{visibility:'show',impact:'assurance',slot:'completion',text:'ADR ✓ fake convergence'}}));process.exit(0);}\nprocess.stderr.write('unexpected fake ADR command');process.exit(2);\n`, { mode: 0o755 });
+await fs.writeFile(fakeAdr, `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nif(process.env.CODEXPRO_TOOL_SURFACE||process.env.CODEBASE_BRIDGE_MODE){process.stderr.write('host control env leaked');process.exit(3);}\nfs.appendFileSync(process.env.ADR_FAKE_LOG, JSON.stringify(args)+'\\n');\nif(args[0]==='host-begin'){process.stdout.write(JSON.stringify({schemaVersion:1,command:'host-begin',status:'tracked',sessionId:'chg.fake'}));process.exit(0);}\nif(args[0]==='host-complete'){process.stdout.write(JSON.stringify({schemaVersion:1,command:'host-complete',status:'converged',presentation:{visibility:'show',impact:'assurance',slot:'completion',text:'ADR ✓ fake convergence'}}));process.exit(0);}\nprocess.stderr.write('unexpected fake ADR command');process.exit(2);\n`, { mode: 0o755 });
 await fs.chmod(fakeAdr, 0o755);
 
 const workspace = {
@@ -17,7 +17,15 @@ const workspace = {
   root: workspaceRoot,
   openedAt: new Date().toISOString()
 };
-const options = { adrBin: fakeAdr, stateRoot, env: { ADR_FAKE_LOG: fakeLog } };
+const options = {
+  adrBin: fakeAdr,
+  stateRoot,
+  env: {
+    ADR_FAKE_LOG: fakeLog,
+    CODEXPRO_TOOL_SURFACE: 'stable',
+    CODEBASE_BRIDGE_MODE: 'legacy-host-control'
+  }
+};
 const first = new AdrHostOrchestrator(options);
 const begin = await first.beforeMutation(workspace, { tool: 'edit', paths: ['src/example.ts'] });
 if (begin.status !== 'tracked') throw new Error(`expected tracked begin, got ${begin.status}`);

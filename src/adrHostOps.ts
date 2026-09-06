@@ -185,6 +185,19 @@ function mutationTask(hint: AdrHostMutationHint): string {
   return `CodexPro direct ${hint.tool} workspace change${suffix}`.slice(0, 500);
 }
 
+function adrChildEnv(base: NodeJS.ProcessEnv, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = {
+    ...base,
+    ...overrides,
+    NO_COLOR: "1",
+    CI: overrides.CI ?? base.CI ?? "1"
+  };
+  for (const key of Object.keys(merged)) {
+    if (key.startsWith("CODEXPRO_") || key.startsWith("CODEBASE_BRIDGE_")) delete merged[key];
+  }
+  return merged;
+}
+
 export class AdrHostOrchestrator {
   private readonly adrBin: string;
   private readonly stateRoot: string;
@@ -205,7 +218,7 @@ export class AdrHostOrchestrator {
     this.hostId = options.hostId ?? "codexpro-mcp";
     this.beginTimeoutMs = options.beginTimeoutMs ?? DEFAULT_BEGIN_TIMEOUT_MS;
     this.completeTimeoutMs = options.completeTimeoutMs ?? DEFAULT_COMPLETE_TIMEOUT_MS;
-    this.env = { ...process.env, ...(options.env ?? {}), NO_COLOR: "1", CI: process.env.CI ?? "1" };
+    this.env = adrChildEnv(process.env, options.env);
   }
 
   private workspaceLockPath(workspace: Workspace): string {
