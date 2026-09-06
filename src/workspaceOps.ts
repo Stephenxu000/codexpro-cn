@@ -9,6 +9,7 @@ import { readTextFile, repoTree, ensureAiBridge } from "./fsOps.js";
 import { gitDiff, gitLog, gitStatus } from "./gitOps.js";
 import { discoverSkillInventory } from "./capabilitiesOps.js";
 import type { SkillInventoryItem } from "./capabilitiesOps.js";
+import { detectExternalBrain, type ExternalBrainProbe } from "./externalBrainOps.js";
 
 export interface WorkspaceSummary {
   text: string;
@@ -21,6 +22,7 @@ export interface WorkspaceSummary {
   skillCounts: Record<string, number>;
   tree?: string;
   gitStatus: string;
+  externalBrain: ExternalBrainProbe;
 }
 
 export interface CodexContext {
@@ -159,6 +161,7 @@ export async function workspaceSummary(
     : [];
   const skills = skillInventory.map((skill) => skill.name);
   const counts = skillCounts(skillInventory);
+  const externalBrain = await detectExternalBrain(workspace);
   const agentsPath = await findAgentsFile(workspace);
   let agentsText = "AGENTS.md: none loaded";
   if (agentsPath) {
@@ -181,7 +184,12 @@ export async function workspaceSummary(
   const skillText = options.includeSkills
     ? `Skills: ${counts.total} total (${counts.workspace ?? 0} workspace, ${counts.user ?? 0} user, ${counts.plugin ?? 0} plugin, ${counts.other ?? 0} other).`
     : "Skills: skipped. Pass include_skills=true if skill discovery is needed.";
-  const text = `# Workspace\n\nWorkspace: ${workspace.id}\nRoot: ${workspace.root}\nBash mode: ${config.bashMode}\nWrite mode: ${config.writeMode}\nTool mode: ${config.toolMode}\n\n${agentsText}\n${skillText}\n\n## Git status\n\n${status}\n\n## Recent commits\n\n${log}\n${treeText ? `\n## Files\n\n${treeText}` : ""}`;
+  const externalBrainText = externalBrain.status === "detected"
+    ? `External brain: ADR detected via ${externalBrain.binding}; local agent tasks will use it automatically when useful.`
+    : externalBrain.status === "unavailable" && externalBrain.binding
+      ? `External brain: ADR binding detected but unavailable [${externalBrain.reasonCode ?? "unknown"}]. CodexPro continues without it.`
+      : "";
+  const text = `# Workspace\n\nWorkspace: ${workspace.id}\nRoot: ${workspace.root}\nBash mode: ${config.bashMode}\nWrite mode: ${config.writeMode}\nTool mode: ${config.toolMode}\n\n${agentsText}\n${skillText}${externalBrainText ? `\n${externalBrainText}` : ""}\n\n## Git status\n\n${status}\n\n## Recent commits\n\n${log}\n${treeText ? `\n## Files\n\n${treeText}` : ""}`;
 
   return {
     text,
@@ -193,7 +201,8 @@ export async function workspaceSummary(
     skillInventory,
     skillCounts: counts,
     tree: treeText,
-    gitStatus: status
+    gitStatus: status,
+    externalBrain
   };
 }
 

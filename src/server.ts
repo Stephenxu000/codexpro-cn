@@ -12,6 +12,7 @@ import { importAttachmentFile } from "./importOps.js";
 import { searchWorkspace } from "./searchOps.js";
 import { runBash } from "./bashOps.js";
 import { runControlledCodex, type AgentRunMode } from "./agentOps.js";
+import { enrichTaskWithExternalBrain } from "./externalBrainOps.js";
 import { configureLocalTaskExecutor, createLocalTask, getLocalTask, listLocalTasks, waitLocalTask, cancelLocalTask, retryLocalTask } from "./taskOps.js";
 import { reloadWhitelistedService } from "./serviceOps.js";
 import { callBaiduRead } from "./mcpReadOps.js";
@@ -1099,20 +1100,24 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
 
   configureLocalTaskExecutor(async ({ task, plan }) => {
     const workspace = workspaces.openWorkspace(task.workspace);
+    const externalBrain = await enrichTaskWithExternalBrain(workspace, plan);
     const result = await runControlledCodex(config, {
-      task: plan,
+      task: externalBrain.task,
       cwd: workspace.root,
       timeoutMs: task.timeout_ms,
       mode: task.mode as AgentRunMode,
       profile: task.profile,
       maxProfile: task.max_profile
     });
+    const contextNote = externalBrain.used
+      ? `\n\n[CodexPro context: ADR external brain used ${externalBrain.materialCount} material(s) across ${externalBrain.stages.join(", ") || "context"}.]`
+      : "";
     return {
       status: result.status,
       exitCode: result.exitCode,
       signal: result.signal,
       durationMs: result.durationMs,
-      output: result.output,
+      output: `${result.output}${contextNote}`,
       modelUsed: result.modelUsed,
       profileUsed: result.profileUsed,
       usage: result.usage
@@ -2009,6 +2014,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         skill_counts: summary.skillCounts,
         tree: summary.tree,
         git_status: summary.gitStatus,
+        external_brain: summary.externalBrain,
         bash_mode: config.bashMode,
         write_mode: config.writeMode,
         tool_mode: config.toolMode
@@ -2064,6 +2070,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         skill_counts: summary.skillCounts,
         tree: summary.tree,
         git_status: summary.gitStatus,
+        external_brain: summary.externalBrain,
         bash_mode: config.bashMode,
         write_mode: config.writeMode,
         tool_mode: config.toolMode
@@ -2113,6 +2120,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         skill_counts: summary.skillCounts,
         tree: summary.tree,
         git_status: summary.gitStatus,
+        external_brain: summary.externalBrain,
         ai_context_files: ai.files,
         bash_mode: config.bashMode,
         write_mode: config.writeMode,
