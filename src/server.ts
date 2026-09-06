@@ -30,6 +30,7 @@ import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidg
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
 import { inspectWorkspace, invalidateWorkspaceAnalysis, reviewWorkspaceChanges } from "./analysis/index.js";
 import { TOOL_SCHEMA_VERSION } from "./toolSchema.js";
+import { createAdrHostOrchestrator, decorateAdrHostResult } from "./adrHostOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -1092,6 +1093,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   const reviewCheckpoints = new Map<string, string>();
   const guard = new PathGuard(config);
   const server = new McpServer({ name: "CodexPro", version: "0.30.0" }, { instructions: serverInstructions(config) });
+  const adrHost = createAdrHostOrchestrator({ hostId: "codexpro-mcp" });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
 
@@ -1497,6 +1499,8 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.workdir ?? ".");
+      const workspaceWrite = (args.mode ?? "read_only") === "workspace_write";
+      if (workspaceWrite) await adrHost.beforeMutation(workspace, { tool: "agent_run", task: args.task });
       const result = await runControlledCodex(config, {
         task: args.task,
         cwd: resolved.absPath,
@@ -1506,7 +1510,10 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         maxProfile: args.max_profile
       });
       const text = ["# Controlled Codex Run", "", `Status: ${result.status}`, `Mode: ${result.mode}`, `Profile: ${result.profileUsed}`, `Model: ${result.modelUsed ?? "unknown"}`, `Exit: ${result.exitCode ?? "none"}${result.signal ? ` (${result.signal})` : ""}`, `Duration: ${result.durationMs} ms`, `Tokens: ${result.usage.total_tokens ?? "unknown"}`, `Credits: ${result.usage.accuracy === "exact" ? "" : "≈"}${result.usage.credits ?? "unknown"}`, "", "## Redacted output", "", result.output].join("\n");
-      return textResult(text, { status: result.status, mode: result.mode, profile_requested: result.profileRequested, profile_used: result.profileUsed, model_used: result.modelUsed, fallback_count: result.fallbackCount, exit_code: result.exitCode, signal: result.signal, duration_ms: result.durationMs, usage: result.usage, output: result.output, truncated: result.truncated });
+      const response = textResult(text, { status: result.status, mode: result.mode, profile_requested: result.profileRequested, profile_used: result.profileUsed, model_used: result.modelUsed, fallback_count: result.fallbackCount, exit_code: result.exitCode, signal: result.signal, duration_ms: result.durationMs, usage: result.usage, output: result.output, truncated: result.truncated });
+      if (!workspaceWrite) return response;
+      const completionStatus = result.status === "completed" ? "succeeded" : result.status === "timed_out" ? "cancelled" : "failed";
+      return decorateAdrHostResult(response, await adrHost.complete(workspace, completionStatus));
     }
   );
 
@@ -2459,6 +2466,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.path, { forWrite: true });
       assertWriteToolAllowed(config, resolved.relPath);
+      await adrHost.beforeMutation(workspace, { tool: "write", paths: [resolved.relPath] });
       const result = await writeTextFile(config, guard, workspace, args.path, String(args.content ?? ""), {
         createDirs: args.create_dirs !== false,
         overwrite: args.overwrite !== false,
@@ -2507,6 +2515,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.path, { forWrite: true });
       assertWriteToolAllowed(config, resolved.relPath);
+      await adrHost.beforeMutation(workspace, { tool: "edit", paths: [resolved.relPath] });
       const result = await editTextFile(config, guard, workspace, args.path, String(args.old_text ?? ""), String(args.new_text ?? ""), {
         replaceAll: parseBool(args.replace_all, false),
         expectedReplacements: args.expected_replacements,
@@ -2549,6 +2558,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
+      await adrHost.beforeMutation(workspace, { tool: "apply_patch" });
       const result = await applyWorkspacePatch(config, guard, workspace, String(args.patch ?? ""));
       if (result.changed) invalidateWorkspaceAnalysis(workspace.id);
       const text = [
@@ -2607,6 +2617,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const workspace = workspaces.getWorkspace(args.workspace_id);
       const resolved = guard.resolve(workspace, args.destination, { forWrite: true });
       assertWriteToolAllowed(config, resolved.relPath);
+      await adrHost.beforeMutation(workspace, { tool: "import_file", paths: [resolved.relPath] });
       const result = await importAttachmentFile(config, guard, workspace, {
         file: args.file,
         destination: String(args.destination ?? ""),
@@ -2700,6 +2711,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
+      if (args.confirm === true) await adrHost.beforeMutation(workspace, { tool: "bash" });
       const result = await runBash(config, guard, workspace, String(args.command ?? ""), {
         cwd: args.cwd,
         timeoutMs: args.timeout_ms,
@@ -2900,8 +2912,12 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
+      const adrCompletion = await adrHost.complete(workspace);
       const result = gitCommit(config, workspace, args.message);
-      return textResult(gitActionText("Git Commit", result), { workspace_id: workspace.id, root: workspace.root, ...result });
+      return decorateAdrHostResult(
+        textResult(gitActionText("Git Commit", result), { workspace_id: workspace.id, root: workspace.root, ...result }),
+        adrCompletion
+      );
     }
   );
 
@@ -2945,6 +2961,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
+      if (args.action === "apply" || args.action === "pop") await adrHost.beforeMutation(workspace, { tool: "git_stash" });
       const result = gitStash(config, guard, workspace, {
         action: args.action,
         message: args.message,
@@ -2974,6 +2991,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
+      if (args.mode === "discard_worktree" || args.mode === "discard_all") {
+        await adrHost.beforeMutation(workspace, { tool: "git_restore", paths: Array.isArray(args.paths) ? args.paths : [] });
+      }
       const result = gitRestore(config, guard, workspace, {
         paths: args.paths,
         mode: args.mode,
@@ -2990,7 +3010,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "show_changes",
     {
       title: "Show Changes",
-      description: "Summarize the current workspace changes in one review-oriented result with git status, diff stats, and optional diff. Use this instead of bash git status, bash git diff, git_status, or git_diff when reviewing work.",
+      description: "Finalize any active ADR Host work session by running its trusted validation gates, then summarize workspace changes with git status, diff stats, and optional diff. Without an active ADR session it remains a plain review. Use this at the normal completion/review point after edits.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Pass it explicitly for non-default workspaces; omitted behavior is legacy-compatible and must not be relied on across stateless requests."),
         path: z.string().optional().describe("Optional file path relative to workspace root."),
@@ -2999,15 +3019,16 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         since: z.enum(["last_shown", "workspace"]).optional().describe("Use last_shown to suppress unchanged repeated reviews. Default: last_shown."),
         mark_reviewed: z.boolean().optional().describe("Update the last-shown review checkpoint after this call. Default: true.")
       },
-      annotations: READ_ONLY_ANNOTATIONS,
+      annotations: BASH_ANNOTATIONS,
       _meta: {
         ...toolCardMeta(),
-        "openai/toolInvocation/invoking": "Summarizing workspace changes...",
+        "openai/toolInvocation/invoking": "Validating and summarizing workspace changes...",
         "openai/toolInvocation/invoked": "Workspace changes summarized"
       }
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
+      const adrCompletion = await adrHost.complete(workspace);
       const scopedPath = typeof args.path === "string" ? args.path : undefined;
       const staged = parseBool(args.staged, false);
       const normalizedScopedPath = scopedPath?.trim() ? guard.resolve(workspace, scopedPath).relPath : undefined;
@@ -3079,7 +3100,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         ? `\n\n## Analysis\n\nAffected areas: ${(analysis.affected_areas as string[]).join(", ") || "none"}\nRisks: ${((analysis.risk_signals as Array<{ label?: string }>) ?? []).map((risk) => risk.label).filter(Boolean).join(", ") || "none"}\nRelated tests: ${((analysis.related_tests as Array<{ path?: string }>) ?? []).map((file) => file.path).filter(Boolean).join(", ") || "none"}`
         : "";
       const text = `# Show Changes\n\nWorkspace: ${workspace.root}\n\n## Changed\n\n${changedText}\n\n## Diff stats\n\n+${responseStats.additions} -${responseStats.deletions}${diffText}${analysisText}`;
-      return textResult(text, {
+      return decorateAdrHostResult(textResult(text, {
         workspace_id: workspace.id,
         root: workspace.root,
         path: args.path ?? "workspace changes",
@@ -3097,7 +3118,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         review_marked: checkpointWritten,
         review_checkpoint_hit: checkpointHit,
         ...(analysis ? { analysis } : {})
-      });
+      }), adrCompletion);
     }
   );
 
