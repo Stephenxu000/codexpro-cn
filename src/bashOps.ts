@@ -30,6 +30,7 @@ const SAFE_ALLOWED_PREFIXES = [
   "git branch",
   "git rev-parse",
   "git ls-files",
+  "git worktree list",
   "launchctl list",
   "launchctl print",
   "launchctl blame",
@@ -221,6 +222,20 @@ function isClearlySafeShellComposition(command: string): boolean {
       startsWithAllowedPrefix(segment) ||
       FULL_COMPOSITION_ALLOWED_PREFIXES.some((prefix) => segment === prefix || segment.startsWith(`${prefix} `))
   );
+}
+
+/**
+ * Classify whether a Bash command may have side effects independently from the
+ * confirmation UX. Unknown commands fail conservative here; known diagnostic,
+ * validation, and read-only compositions do not start an ADR mutation session.
+ */
+export function bashCommandMayHaveSideEffects(command: string): boolean {
+  const normalized = compact(command);
+  if (!normalized) return false;
+  if (hasActiveShellSyntaxRequiringConfirmation(command)) return true;
+  if (startsWithAllowedPrefix(normalized)) return false;
+  if (isClearlySafeShellComposition(command)) return false;
+  return true;
 }
 
 function compact(command: string): string {

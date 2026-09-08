@@ -10,7 +10,7 @@ import { repoTree, readTextFile, writeTextFile, editTextFile, ensureAiBridge, wi
 import { viewWorkspaceImage } from "./imageOps.js";
 import { importAttachmentFile } from "./importOps.js";
 import { searchWorkspace } from "./searchOps.js";
-import { runBash } from "./bashOps.js";
+import { bashCommandMayHaveSideEffects, runBash } from "./bashOps.js";
 import { runControlledCodex, type AgentRunMode } from "./agentOps.js";
 import { enrichTaskWithExternalBrain } from "./externalBrainOps.js";
 import { configureLocalTaskExecutor, createLocalTask, getLocalTask, listLocalTasks, waitLocalTask, cancelLocalTask, retryLocalTask } from "./taskOps.js";
@@ -2741,8 +2741,11 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      const adrBegin = args.confirm === true ? await adrHost.beforeMutation(workspace, { tool: "bash" }) : undefined;
-      const result = await runBash(config, guard, workspace, String(args.command ?? ""), {
+      const command = String(args.command ?? "");
+      const adrBegin = bashCommandMayHaveSideEffects(command)
+        ? await adrHost.beforeMutation(workspace, { tool: "bash" })
+        : undefined;
+      const result = await runBash(config, guard, workspace, command, {
         cwd: args.cwd,
         timeoutMs: args.timeout_ms,
         sessionId: args.session_id,

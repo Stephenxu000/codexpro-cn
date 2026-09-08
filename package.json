@@ -69,7 +69,7 @@
     "codexpro-mcp-http": "dist/http.js"
   },
   "scripts": {
-    "test": "npm run build && node scripts/external-brain-smoke.mjs && node scripts/adr-host-smoke.mjs && node scripts/adr-host-server-smoke.mjs && node scripts/smoke.mjs",
+    "test": "npm run build && node scripts/external-brain-smoke.mjs && node scripts/adr-bash-classification-smoke.mjs && node scripts/adr-host-smoke.mjs && node scripts/adr-host-server-smoke.mjs && node scripts/smoke.mjs",
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
     "prepublishOnly": "node scripts/release-guard.mjs",

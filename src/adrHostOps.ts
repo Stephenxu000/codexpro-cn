@@ -33,6 +33,7 @@ export type AdrHostBegin = {
   status: "tracked" | "existing" | "passthrough" | "unavailable";
   error?: string;
   modelContext?: string;
+  recoveredOrphan?: boolean;
 };
 
 export type AdrHostMutationHint = {
@@ -72,6 +73,11 @@ export type AdrHostOrchestratorOptions = {
 function safeError(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`.slice(0, 1200);
   return String(error).slice(0, 1200);
+}
+
+function isMissingAdrHostSession(error: unknown): boolean {
+  const text = safeError(error).toLowerCase();
+  return text.includes("host-session.json") && (text.includes("enoent") || text.includes("no such file or directory"));
 }
 
 function boundedText(value: string, maxChars = MAX_MODEL_CONTEXT_CHARS): string {
@@ -314,6 +320,7 @@ export class AdrHostOrchestrator {
   async beforeMutation(workspace: Workspace, hint: AdrHostMutationHint): Promise<AdrHostBegin> {
     let release: (() => Promise<void>) | undefined;
     let hadTrackedSession = false;
+    let recoveredOrphan = false;
     try {
       release = await acquireProcessLock(this.workspaceLockPath(workspace));
       const state = await this.readState();
@@ -321,7 +328,15 @@ export class AdrHostOrchestrator {
       hadTrackedSession = Boolean(current && path.resolve(current.root) === path.resolve(workspace.root));
       if (current && path.resolve(current.root) === path.resolve(workspace.root)) {
         if (this.sessionIsStale(current)) {
-          await this.completeLocked(workspace, "cancelled", true);
+          try {
+            await this.completeLocked(workspace, "cancelled", true);
+          } catch (error) {
+            if (!isMissingAdrHostSession(error)) throw error;
+            await this.writeState((next) => {
+              delete next.sessions[workspace.id];
+            });
+            recoveredOrphan = true;
+          }
           hadTrackedSession = false;
         } else {
           const now = new Date().toISOString();
@@ -360,7 +375,11 @@ export class AdrHostOrchestrator {
         await this.writeState((next) => {
           next.sessions[workspace.id] = record;
         });
-        return { status: "tracked", ...(modelContext ? { modelContext } : {}) };
+        return {
+          status: "tracked",
+          ...(modelContext ? { modelContext } : {}),
+          ...(recoveredOrphan ? { recoveredOrphan: true } : {})
+        };
       }
       return { status: "passthrough" };
     } catch (error) {
@@ -410,7 +429,9 @@ export class AdrHostOrchestrator {
 export function decorateAdrHostMutationResult(result: any, begin: AdrHostBegin | undefined): any {
   if (!begin || (begin.status !== "tracked" && begin.status !== "existing")) return result;
   const contextText = begin.status === "tracked" && begin.modelContext ? begin.modelContext.trim() : "";
-  const lifecycleHint = "ADR Host 已跟踪本轮改动；在向用户报告完成前调用 show_changes，以执行可信验证并输出收敛结果。";
+  const lifecycleHint = begin.recoveredOrphan
+    ? "ADR Host 已丢弃一个后端记录缺失的旧 session；旧改动只作为新 baseline，未被重新证明。继续本轮工作前请把它们视为未验证历史；完成前调用 show_changes。"
+    : "ADR Host 已跟踪本轮改动；在向用户报告完成前调用 show_changes，以执行可信验证并输出收敛结果。";
   const injectedText = contextText
     ? `${lifecycleHint}\n\n## ADR Project Context for subsequent steps\n\n${contextText}`
     : lifecycleHint;
@@ -430,7 +451,8 @@ export function decorateAdrHostMutationResult(result: any, begin: AdrHostBegin |
         status: begin.status,
         tracking: true,
         completion_tool: "show_changes",
-        ...(contextText ? { context_injected: true } : {})
+        ...(contextText ? { context_injected: true } : {}),
+        ...(begin.recoveredOrphan ? { recovered_orphan: true } : {})
       }
     }
   };
