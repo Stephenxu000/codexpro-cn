@@ -22,7 +22,7 @@ import { callLabJob } from "./labJobOps.js";
 import { readUsage } from "./usageOps.js";
 import { finishWorkUnit, readWorkUnit, startWorkUnit } from "./workUnitOps.js";
 import { verifyChangedJs } from "./verifyOps.js";
-import { gitCommit, gitCreateBranch, gitDiff, gitDiffStatus, gitLog, gitMerge, gitRestore, gitStage, gitStageHunks, gitStash, gitStatus, gitSwitch, type GitActionResult } from "./gitOps.js";
+import { gitCommit, gitCreateBranch, gitDiff, gitDiffStatus, gitLog, gitMerge, gitPush, gitRestore, gitStage, gitStageHunks, gitStash, gitStatus, gitSwitch, type GitActionResult } from "./gitOps.js";
 import { readAiBridgeContext, readCodexContext, workspaceSummary } from "./workspaceOps.js";
 import { buildProContext, exportProContext } from "./proContext.js";
 import { codexproInventory, loadSkill, searchSkills } from "./capabilitiesOps.js";
@@ -404,6 +404,7 @@ const FULL_TOOL_NAMES = [
   "git_stage",
   "git_stage_hunks",
   "git_commit",
+  "git_push",
   "git_merge",
   "git_stash",
   "git_restore",
@@ -448,6 +449,7 @@ const STABLE_DIRECT_TOOL_NAMES = new Set<string>([
   "git_stage",
   "git_stage_hunks",
   "git_commit",
+  "git_push",
   "git_merge",
   "git_stash",
   "git_restore",
@@ -460,6 +462,7 @@ const GIT_MUTATING_TOOLS = new Set<string>([
   "git_stage",
   "git_stage_hunks",
   "git_commit",
+  "git_push",
   "git_merge",
   "git_stash",
   "git_restore"
@@ -569,7 +572,15 @@ function registeredToolNames(server: McpServer): string[] {
   return [...(registeredToolNamesByServer.get(server as object) ?? [])];
 }
 
+const PROJECT_BRIDGE_TOOLS = new Set([
+  "tree", "search", "read", "write", "edit", "apply_patch",
+  "git_status", "git_diff", "show_changes", "git_stage", "git_stage_hunks",
+  "git_commit", "git_push", "git_create_branch", "git_switch",
+  "work_unit_start", "work_unit_status", "work_unit_finish", "run_check"
+]);
+
 function isToolEnabled(config: CodexProConfig, name: string): boolean {
+  if (config.projectBridge && !PROJECT_BRIDGE_TOOLS.has(name)) return false;
   if (config.connectionTest && CONNECTION_TEST_HIDDEN_TOOLS.has(name)) return false;
   if (name === "bash" && config.bashMode === "off") return false;
   if ((name === "write" || name === "edit" || name === "apply_patch" || name === "import_file" || GIT_MUTATING_TOOLS.has(name)) && config.writeMode !== "workspace") return false;
@@ -2762,6 +2773,47 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   registerCodexTool(
     config,
     server,
+    "run_check",
+    {
+      title: "Run Project Check",
+      description: "Run one server-configured project quality command. Clients cannot provide arbitrary shell commands.",
+      inputSchema: {
+        workspace_id: z.string().optional().describe("Stable workspace id. Omit only for the configured default workspace."),
+        check: z.string().min(1).max(300).describe("Exact configured check name/command returned by project policy.")
+      },
+      annotations: BASH_ANNOTATIONS
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const check = String(args.check).trim();
+      if (!config.projectBridgeChecks.includes(check)) {
+        throw new CodexProError("run_check only accepts commands pre-registered in CODEXPRO_PROJECT_BRIDGE_CHECKS.");
+      }
+      const result = spawnSync(check, {
+        cwd: workspace.root,
+        shell: true,
+        encoding: "utf8",
+        maxBuffer: config.maxOutputBytes,
+        timeout: config.maxBashTimeoutMs,
+        env: { ...process.env, NO_COLOR: "1", CI: "1" }
+      });
+      const stdout = redactSensitiveText(result.stdout?.trim() || "");
+      const stderr = redactSensitiveText(result.stderr?.trim() || "");
+      if (result.error || result.status !== 0) {
+        throw new CodexProError(stderr || stdout || result.error?.message || "Project check failed.");
+      }
+      return textResult("# Run Project Check\n\n" + check + "\n\n" + (stdout || "(no output)"), {
+        workspace_id: workspace.id,
+        root: workspace.root,
+        check,
+        exit_code: result.status ?? 0
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
     "git_status",
     {
       title: "Git Status",
@@ -2957,6 +3009,26 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         textResult(gitActionText("Git Commit", result), { workspace_id: workspace.id, root: workspace.root, ...result }),
         adrCompletion
       );
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "git_push",
+    {
+      title: "Git Push",
+      description: "Push the current branch without force. Requires a clean working tree and refuses a branch that is behind its configured upstream.",
+      inputSchema: {
+        workspace_id: z.string().optional().describe("Stable workspace id. Omit only for the configured default workspace."),
+        remote: z.string().min(1).max(200).optional().describe("Remote name. Default: origin.")
+      },
+      annotations: GIT_WRITE_ANNOTATIONS
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const result = gitPush(config, workspace, args.remote ?? "origin");
+      return textResult(gitActionText("Git Push", result), { workspace_id: workspace.id, root: workspace.root, ...result });
     }
   );
 

@@ -42,6 +42,8 @@ export interface CodexProConfig {
   connectionTest: boolean;
   analysisEnabled: boolean;
   analysisLimits: AnalysisLimits;
+  projectBridge: boolean;
+  projectBridgeChecks: string[];
 }
 
 const DEFAULT_BLOCKED_GLOBS = [
@@ -134,6 +136,10 @@ function splitList(value: string | undefined, delimiter: string = path.delimiter
 
 function splitRoots(value: string | undefined): string[] {
   return splitList(value, path.delimiter);
+}
+
+function splitChecks(value: string | undefined): string[] {
+  return splitList(value, ",").filter((item) => item.length <= 300);
 }
 
 function toRealDir(input: string): string {
@@ -350,6 +356,8 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
       maxScannedBytes: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_SCANNED_BYTES, DEFAULT_ANALYSIS_LIMITS.maxScannedBytes, 1_000_000, 512 * 1024 * 1024),
       maxSymbols: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_SYMBOLS, DEFAULT_ANALYSIS_LIMITS.maxSymbols, 100, 1_000_000),
       maxRelationships: numberFrom(process.env.CODEXPRO_ANALYSIS_MAX_RELATIONSHIPS, DEFAULT_ANALYSIS_LIMITS.maxRelationships, 100, 2_000_000)
-    }
+    },
+    projectBridge: boolFrom(process.env.CODEXPRO_PROJECT_BRIDGE, false),
+    projectBridgeChecks: splitChecks(process.env.CODEXPRO_PROJECT_BRIDGE_CHECKS)
   };
 }

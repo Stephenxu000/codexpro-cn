@@ -192,6 +192,23 @@ export function gitCommit(config: CodexProConfig, workspace: Workspace, messageI
   return actionResult(config, workspace, "commit", stdout);
 }
 
+export function gitPush(config: CodexProConfig, workspace: Workspace, remoteInput = "origin"): GitActionResult {
+  const remote = assertSafeRef(remoteInput, "remote");
+  const branch = runGitChecked(config, workspace, ["branch", "--show-current"]);
+  if (!branch || branch === "(no output)") throw new CodexProError("Cannot push from a detached HEAD.");
+  assertSafeRef(branch, "branch");
+  const dirty = runGitChecked(config, workspace, ["status", "--porcelain=v1"]);
+  if (dirty !== "(no output)") throw new CodexProError("git_push requires a clean working tree after commit.");
+  const upstream = runGitRaw(workspace, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], config.maxOutputBytes);
+  if (upstream.status === 0) {
+    const behindText = runGitChecked(config, workspace, ["rev-list", "--count", "HEAD..@{u}"]);
+    const behind = Number.parseInt(behindText, 10);
+    if (Number.isFinite(behind) && behind > 0) throw new CodexProError("git_push blocked: local branch is behind its upstream.");
+  }
+  const stdout = runGitChecked(config, workspace, ["push", "--porcelain", remote, "HEAD:refs/heads/" + branch]);
+  return actionResult(config, workspace, "push", stdout);
+}
+
 export function gitMerge(config: CodexProConfig, workspace: Workspace, branchInput: string): GitActionResult {
   const branch = assertSafeRef(branchInput, "branch");
   const stdout = runGitChecked(config, workspace, ["merge", "--no-edit", branch]);
