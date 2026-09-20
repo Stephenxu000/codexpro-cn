@@ -107,6 +107,53 @@ function gitActionText(title: string, result: GitActionResult): string {
   ].join("\n");
 }
 
+function gitProbe(config: CodexProConfig, workspace: Workspace, args: string[]): string {
+  const result = spawnSync("git", args, {
+    cwd: workspace.root,
+    encoding: "utf8",
+    maxBuffer: config.maxOutputBytes,
+    env: { ...process.env, NO_COLOR: "1", GIT_TERMINAL_PROMPT: "0" }
+  });
+  if (result.error || result.status !== 0) return "";
+  return redactSensitiveText((result.stdout || "").trim());
+}
+
+function projectStatusSnapshot(config: CodexProConfig, workspace: Workspace): {
+  branch: string;
+  head: string;
+  upstream: string;
+  ahead: number;
+  behind: number;
+  clean: boolean;
+  changedFiles: string[];
+  rawStatus: string;
+} {
+  const rawStatus = gitStatus(config, workspace);
+  const changedFiles = looksLikeGitError(rawStatus) ? [] : changedStatusLines(rawStatus);
+  const branch = gitProbe(config, workspace, ["branch", "--show-current"]) || "detached";
+  const head = gitProbe(config, workspace, ["rev-parse", "--short=12", "HEAD"]);
+  const upstream = gitProbe(config, workspace, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+  let ahead = 0;
+  let behind = 0;
+  if (upstream) {
+    const counts = gitProbe(config, workspace, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+      .split(/\s+/)
+      .map((value) => Number.parseInt(value, 10));
+    if (Number.isFinite(counts[0])) ahead = counts[0];
+    if (Number.isFinite(counts[1])) behind = counts[1];
+  }
+  return {
+    branch,
+    head,
+    upstream,
+    ahead,
+    behind,
+    clean: changedFiles.length === 0,
+    changedFiles,
+    rawStatus
+  };
+}
+
 function errorResult(error: unknown): any {
   return {
     isError: true,
@@ -572,14 +619,20 @@ function registeredToolNames(server: McpServer): string[] {
   return [...(registeredToolNamesByServer.get(server as object) ?? [])];
 }
 
+const PROJECT_BRIDGE_ONLY_TOOLS = new Set([
+  "project_status", "project_overview", "verify_project", "run_check"
+]);
+
 const PROJECT_BRIDGE_TOOLS = new Set([
+  ...PROJECT_BRIDGE_ONLY_TOOLS,
   "tree", "search", "read", "write", "edit", "apply_patch",
   "git_status", "git_diff", "show_changes", "git_stage", "git_stage_hunks",
   "git_commit", "git_push", "git_create_branch", "git_switch",
-  "work_unit_start", "work_unit_status", "work_unit_finish", "run_check"
+  "work_unit_start", "work_unit_status", "work_unit_finish"
 ]);
 
 function isToolEnabled(config: CodexProConfig, name: string): boolean {
+  if (!config.projectBridge && PROJECT_BRIDGE_ONLY_TOOLS.has(name)) return false;
   if (config.projectBridge && !PROJECT_BRIDGE_TOOLS.has(name)) return false;
   if (config.connectionTest && CONNECTION_TEST_HIDDEN_TOOLS.has(name)) return false;
   if (name === "bash" && config.bashMode === "off") return false;
@@ -636,6 +689,20 @@ function installStableToolListFilter(config: CodexProConfig, server: McpServer):
 }
 
 function serverInstructions(config: CodexProConfig): string {
+  if (config.projectBridge) {
+    return [
+      "This is a project-scoped development bridge. The workspace is already fixed to the authorized project.",
+      "Do not look for open_workspace or open_current_workspace; they are intentionally unavailable.",
+      "For project state, call project_status first. It returns branch, clean/dirty state, changed files, HEAD, upstream and sync state in one call.",
+      "For a quick project orientation, use project_overview before doing broad tree/search/read exploration.",
+      "When the user asks for an implementation or fix, continue through the necessary search/read/edit/verify/review steps instead of stopping after one low-level tool call.",
+      "After edits, call verify_project and then show_changes before reporting completion.",
+      "Use git_status/git_diff only when the user explicitly asks for raw Git detail or project_status is insufficient.",
+      "Bash is intentionally unavailable. Use verify_project/run_check for configured project checks.",
+      "",
+      `Current modes: project-bridge, write=${config.writeMode}, checks=${config.projectBridgeChecks.join(" | ") || "none"}.`
+    ].join("\n");
+  }
   const editInstruction =
     config.connectionTest
       ? "4. Connection test mode is read-only. Write, patch, export, and handoff-writing tools are unavailable."
@@ -2773,6 +2840,157 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   registerCodexTool(
     config,
     server,
+    "project_status",
+    {
+      title: "Project Status",
+      description: "Preferred first call for project state. Returns branch, clean/dirty state, changed files, HEAD, upstream sync status, and configured quality checks in a human-readable form.",
+      inputSchema: {},
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async () => {
+      const workspace = workspaces.getWorkspace(undefined);
+      const snapshot = projectStatusSnapshot(config, workspace);
+      const sync = snapshot.upstream
+        ? snapshot.ahead === 0 && snapshot.behind === 0
+          ? "synced"
+          : `ahead ${snapshot.ahead}, behind ${snapshot.behind}`
+        : "no upstream configured";
+      const text = [
+        "# Project Status",
+        "",
+        `Branch: ${snapshot.branch}`,
+        `Workspace: ${snapshot.clean ? "clean — no uncommitted changes" : `dirty — ${snapshot.changedFiles.length} changed file(s)`}`,
+        `HEAD: ${snapshot.head || "unknown"}`,
+        `Upstream: ${snapshot.upstream || "none"}`,
+        `Sync: ${sync}`,
+        "",
+        "Changed files:",
+        ...(snapshot.changedFiles.length ? snapshot.changedFiles.map((file) => `- ${file}`) : ["- none"]),
+        "",
+        "Configured quality checks:",
+        ...(config.projectBridgeChecks.length ? config.projectBridgeChecks.map((check) => `- ${check}`) : ["- none"])
+      ].join("\n");
+      return textResult(text, {
+        workspace_id: workspace.id,
+        branch: snapshot.branch,
+        head: snapshot.head,
+        upstream: snapshot.upstream || null,
+        ahead: snapshot.ahead,
+        behind: snapshot.behind,
+        clean: snapshot.clean,
+        changed_files: snapshot.changedFiles,
+        quality_checks: config.projectBridgeChecks,
+        raw_git_status: snapshot.rawStatus
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "project_overview",
+    {
+      title: "Project Overview",
+      description: "Quickly understand the fixed project before editing. Returns a bounded file tree, recent commits, Git state, and project guidance without requiring workspace setup.",
+      inputSchema: {},
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async () => {
+      const workspace = workspaces.getWorkspace(undefined);
+      const summary = await workspaceSummary(config, guard, workspace, {
+        includeTree: true,
+        maxDepth: 2,
+        maxEntries: 140,
+        includeSkills: false,
+        bootstrapContext: false
+      });
+      let readme = "";
+      try {
+        const result = await readTextFile(config, guard, workspace, "README.md", { maxBytes: 36_000 });
+        readme = previewText(result.text, 80, 12_000);
+      } catch {
+        readme = "";
+      }
+      const text = [
+        "# Project Overview",
+        "",
+        "Use this as orientation. For a specific change, continue with targeted search/read calls rather than guessing from this summary.",
+        "",
+        previewText(summary.text, 120, 18_000),
+        ...(readme ? ["", "## README excerpt", "", readme] : [])
+      ].join("\n");
+      return textResult(text, {
+        workspace_id: workspace.id,
+        root: workspace.root,
+        git_status: summary.gitStatus,
+        tree: summary.tree,
+        agents_path: summary.agentsPath ?? null,
+        readme_excerpt: readme || null
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "verify_project",
+    {
+      title: "Verify Project",
+      description: "Run every quality check configured for this project bridge. Prefer this after edits instead of choosing run_check commands manually.",
+      inputSchema: {},
+      annotations: BASH_ANNOTATIONS
+    },
+    async () => {
+      const workspace = workspaces.getWorkspace(undefined);
+      if (!config.projectBridgeChecks.length) {
+        return textResult("# Verify Project\n\nNo quality checks are configured.", {
+          workspace_id: workspace.id,
+          passed: true,
+          checks: []
+        });
+      }
+      const checks = config.projectBridgeChecks.map((check) => {
+        const result = spawnSync(check, {
+          cwd: workspace.root,
+          shell: true,
+          encoding: "utf8",
+          maxBuffer: config.maxOutputBytes,
+          timeout: config.maxBashTimeoutMs,
+          env: { ...process.env, NO_COLOR: "1", CI: "1" }
+        });
+        const stdout = redactSensitiveText(result.stdout?.trim() || "");
+        const stderr = redactSensitiveText(result.stderr?.trim() || "");
+        return {
+          check,
+          passed: !result.error && result.status === 0,
+          exit_code: result.status ?? null,
+          output: previewText(stdout || stderr || "(no output)", 40, 8_000)
+        };
+      });
+      const passed = checks.every((check) => check.passed);
+      const text = [
+        "# Verify Project",
+        "",
+        `Result: ${passed ? "PASS" : "FAIL"}`,
+        "",
+        ...checks.flatMap((check) => [
+          `## ${check.passed ? "PASS" : "FAIL"} — ${check.check}`,
+          "",
+          check.output,
+          ""
+        ])
+      ].join("\n");
+      return textResult(text, {
+        workspace_id: workspace.id,
+        passed,
+        checks
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
     "run_check",
     {
       title: "Run Project Check",
@@ -2835,14 +3053,35 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       const status = gitStatus(config, workspace, guard, scopedPath);
       const statusError = looksLikeGitError(status) ? status : "";
       const changedFiles = statusError ? [] : changedStatusLines(status);
-      return textResult(status, {
+      const snapshot = !statusError && !scopedPath ? projectStatusSnapshot(config, workspace) : undefined;
+      const readableStatus = snapshot
+        ? [
+            `Branch: ${snapshot.branch}`,
+            `Workspace: ${snapshot.clean ? "clean — no uncommitted changes" : `dirty — ${snapshot.changedFiles.length} changed file(s)`}`,
+            `HEAD: ${snapshot.head || "unknown"}`,
+            `Upstream: ${snapshot.upstream || "none"}`,
+            `Sync: ${snapshot.upstream ? `ahead ${snapshot.ahead}, behind ${snapshot.behind}` : "no upstream configured"}`,
+            "",
+            "Changed files:",
+            ...(snapshot.changedFiles.length ? snapshot.changedFiles.map((file) => `- ${file}`) : ["- none"])
+          ].join("\n")
+        : status;
+      return textResult(readableStatus, {
         workspace_id: workspace.id,
         root: workspace.root,
         path: args.path ?? "workspace status",
         status,
         status_error: statusError || undefined,
         changed_files: changedFiles,
-        changed: !statusError && changedFiles.length > 0
+        changed: !statusError && changedFiles.length > 0,
+        ...(snapshot ? {
+          branch: snapshot.branch,
+          head: snapshot.head,
+          upstream: snapshot.upstream || null,
+          ahead: snapshot.ahead,
+          behind: snapshot.behind,
+          clean: snapshot.clean
+        } : {})
       });
     }
   );
