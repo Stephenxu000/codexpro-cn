@@ -10,8 +10,7 @@ const allowed = new Set([
   "project_status", "project_overview", "verify_project",
   "tree", "search", "read", "write", "edit", "apply_patch",
   "git_status", "git_diff", "show_changes", "git_stage", "git_stage_hunks",
-  "git_commit", "git_push", "git_create_branch", "git_switch",
-  "work_unit_start", "work_unit_status", "work_unit_finish", "run_check"
+  "git_commit", "git_push"
 ]);
 
 function freePort() {
@@ -82,20 +81,16 @@ try {
   for (const name of names) {
     if (!allowed.has(name)) throw new Error("unexpected project bridge tool: " + name);
   }
-  for (const name of ["project_status", "project_overview", "verify_project", "read", "edit", "git_commit", "git_push", "run_check"]) {
+  for (const name of ["project_status", "project_overview", "verify_project", "read", "edit", "git_commit", "git_push"]) {
     if (!names.has(name)) throw new Error("missing project bridge tool: " + name);
   }
   const projectStatus = await client.callTool({ name: "project_status", arguments: {} });
   if (projectStatus.isError || !JSON.stringify(projectStatus).includes("Workspace:")) throw new Error("project_status did not return human-readable status");
   const verified = await client.callTool({ name: "verify_project", arguments: {} });
   if (verified.isError) throw new Error("verify_project failed");
-  for (const forbidden of ["open_workspace", "bash", "server_config", "reload_service"]) {
+  for (const forbidden of ["open_workspace", "bash", "server_config", "reload_service", "run_check", "git_switch", "git_create_branch", "work_unit_start"]) {
     if (names.has(forbidden)) throw new Error("forbidden project bridge tool exposed: " + forbidden);
   }
-  const check = await client.callTool({ name: "run_check", arguments: { check: "node --version" } });
-  if (check.isError) throw new Error("configured run_check failed");
-  const rejected = await client.callTool({ name: "run_check", arguments: { check: "pwd" } });
-  if (!rejected.isError) throw new Error("unconfigured run_check was accepted");
   await client.close();
   console.log("project bridge smoke ok: " + names.size + " scoped tools");
 } finally {

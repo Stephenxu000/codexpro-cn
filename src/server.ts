@@ -620,15 +620,14 @@ function registeredToolNames(server: McpServer): string[] {
 }
 
 const PROJECT_BRIDGE_ONLY_TOOLS = new Set([
-  "project_status", "project_overview", "verify_project", "run_check"
+  "project_status", "project_overview", "verify_project"
 ]);
 
 const PROJECT_BRIDGE_TOOLS = new Set([
-  ...PROJECT_BRIDGE_ONLY_TOOLS,
+  "project_status", "project_overview", "verify_project",
   "tree", "search", "read", "write", "edit", "apply_patch",
   "git_status", "git_diff", "show_changes", "git_stage", "git_stage_hunks",
-  "git_commit", "git_push", "git_create_branch", "git_switch",
-  "work_unit_start", "work_unit_status", "work_unit_finish"
+  "git_commit", "git_push"
 ]);
 
 function isToolEnabled(config: CodexProConfig, name: string): boolean {
@@ -698,7 +697,7 @@ function serverInstructions(config: CodexProConfig): string {
       "When the user asks for an implementation or fix, continue through the necessary search/read/edit/verify/review steps instead of stopping after one low-level tool call.",
       "After edits, call verify_project and then show_changes before reporting completion.",
       "Use git_status/git_diff only when the user explicitly asks for raw Git detail or project_status is insufficient.",
-      "Bash is intentionally unavailable. Use verify_project/run_check for configured project checks.",
+      "Bash is intentionally unavailable. Use verify_project for the configured project quality checks.",
       "",
       `Current modes: project-bridge, write=${config.writeMode}, checks=${config.projectBridgeChecks.join(" | ") || "none"}.`
     ].join("\n");
