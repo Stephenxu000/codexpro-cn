@@ -1450,10 +1450,11 @@ async function main(): Promise<void> {
   }
 
   const config = loadConfig();
-  if (config.requireHttpToken && !config.authToken) {
+  const hasHttpAuth = Boolean(config.authToken || (config.authEmail && config.authKey));
+  if (config.requireHttpToken && !hasHttpAuth) {
     throw new Error(
-      "CODEXPRO_HTTP_TOKEN is required for this HTTP binding. " +
-        "Set CODEXPRO_HTTP_TOKEN, use `codexpro start` to generate one, " +
+      "HTTP authentication is required for this binding. " +
+        "Set CODEXPRO_HTTP_TOKEN or CODEXPRO_HTTP_EMAIL + CODEXPRO_HTTP_KEY, " +
         "or set CODEXPRO_ALLOW_NO_HTTP_TOKEN=1 only for a trusted local-only setup."
     );
   }
@@ -1463,11 +1464,26 @@ async function main(): Promise<void> {
   const authFailureWindow = new Map<string, { count: number; resetAt: number }>();
   const authFailureLimit = 10;
 
-  function tokenMatches(value: unknown): boolean {
-    if (!config.authToken || typeof value !== "string") return false;
-    const expected = Buffer.from(config.authToken);
+  function valueMatches(expectedValue: string | undefined, value: unknown): boolean {
+    if (!expectedValue || typeof value !== "string") return false;
+    const expected = Buffer.from(expectedValue);
     const actual = Buffer.from(value);
     return expected.length === actual.length && timingSafeEqual(expected, actual);
+  }
+
+  function tokenMatches(value: unknown): boolean {
+    return valueMatches(config.authToken, value);
+  }
+
+  function humanCredentialMatches(req: Request): boolean {
+    if (!config.authEmail || !config.authKey) return false;
+    const email = req.get("x-mcp-email")?.trim();
+    const key = req.get("x-mcp-key");
+    return (
+      typeof email === "string" &&
+      email.toLowerCase() === config.authEmail.toLowerCase() &&
+      valueMatches(config.authKey, key)
+    );
   }
 
   const adminRateWindow = new Map<string, { count: number; resetAt: number }>();
@@ -1523,7 +1539,7 @@ async function main(): Promise<void> {
     next();
   });
   app.use((req, res, next) => {
-    if (!config.authToken) {
+    if (!hasHttpAuth) {
       next();
       return;
     }
@@ -1533,7 +1549,7 @@ async function main(): Promise<void> {
       : typeof req.query.token === "string"
         ? req.query.token
         : undefined;
-    if (tokenMatches(bearer) || tokenMatches(queryToken)) {
+    if (tokenMatches(bearer) || tokenMatches(queryToken) || humanCredentialMatches(req)) {
       next();
       return;
     }
@@ -1604,8 +1620,8 @@ async function main(): Promise<void> {
       toolSurface: config.toolSurface,
       widgetDomain: config.widgetDomain,
       contextDir: config.contextDir,
-      authEnabled: Boolean(config.authToken),
-      authRequired: Boolean(config.authToken)
+      authEnabled: hasHttpAuth,
+      authRequired: hasHttpAuth
     });
   });
 

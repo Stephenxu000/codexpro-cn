@@ -18,6 +18,8 @@ export interface CodexProConfig {
   port: number;
   widgetDomain: string;
   authToken?: string;
+  authEmail?: string;
+  authKey?: string;
   requireHttpToken: boolean;
   bashMode: BashMode;
   bashTranscript: BashTranscriptMode;
@@ -307,9 +309,18 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
       "Use `codexpro start` to generate a strong token."
     );
   }
+  const authEmail = process.env.CODEXPRO_HTTP_EMAIL?.trim() || undefined;
+  const authKey = process.env.CODEXPRO_HTTP_KEY;
+  if (Boolean(authEmail) !== Boolean(authKey)) {
+    throw new Error("CODEXPRO_HTTP_EMAIL and CODEXPRO_HTTP_KEY must be configured together.");
+  }
+  if (authKey && Buffer.byteLength(authKey, "utf8") < 12) {
+    throw new Error("CODEXPRO_HTTP_KEY must be at least 12 bytes.");
+  }
+  const hasHttpAuth = Boolean(authToken || (authEmail && authKey));
   const allowNoToken = boolFrom(process.env.CODEXPRO_ALLOW_NO_HTTP_TOKEN, false) && isLoopbackHost(host);
   const requireHttpToken =
-    (!authToken && !allowNoToken) ||
+    (!hasHttpAuth && !allowNoToken) ||
     boolFrom(process.env.CODEXPRO_REQUIRE_HTTP_TOKEN, false) ||
     boolFrom(process.env.CODEXPRO_TUNNEL_MODE, false) ||
     (!isLoopbackHost(host) && !allowNoToken);
@@ -326,6 +337,8 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     port: numberFrom(portArg ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8787, 1, 65535),
     widgetDomain: widgetDomainFrom(widgetDomainArg ?? process.env.CODEXPRO_WIDGET_DOMAIN),
     authToken,
+    authEmail,
+    authKey,
     requireHttpToken,
     bashMode: bashModeFrom(bashArg ?? process.env.CODEXPRO_BASH_MODE),
     bashTranscript: bashTranscriptFrom(bashTranscriptArg ?? process.env.CODEXPRO_BASH_TRANSCRIPT),

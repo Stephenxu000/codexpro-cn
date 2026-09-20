@@ -29,6 +29,8 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), "codexpro-project-bridge-")
 const home = await fs.mkdtemp(path.join(os.tmpdir(), "codexpro-project-bridge-home-"));
 await fs.writeFile(path.join(root, "marker.txt"), "project bridge\n");
 const port = await freePort();
+const authEmail = "bridge-smoke@example.test";
+const authKey = "[REDACTED_SECRET]";
 const child = spawn("node", ["dist/http.js"], {
   cwd: path.resolve("."),
   env: {
@@ -38,7 +40,8 @@ const child = spawn("node", ["dist/http.js"], {
     CODEXPRO_ROOT: root,
     CODEXPRO_HOST: "127.0.0.1",
     CODEXPRO_PORT: String(port),
-    CODEXPRO_ALLOW_NO_HTTP_TOKEN: "1",
+    CODEXPRO_HTTP_EMAIL: authEmail,
+    CODEXPRO_HTTP_KEY: authKey,
     CODEXPRO_PROJECT_BRIDGE: "1",
     CODEXPRO_PROJECT_BRIDGE_CHECKS: "node --version",
     CODEXPRO_BASH_MODE: "off",
@@ -62,8 +65,17 @@ try {
     });
     child.on("exit", (code) => reject(new Error("server exited " + code + "\n" + stderr)));
   });
+  const rejectedHealth = await fetch("http://127.0.0.1:" + port + "/healthz");
+  if (rejectedHealth.status !== 401) throw new Error("project bridge accepted unauthenticated HTTP");
+  const authorizedHealth = await fetch("http://127.0.0.1:" + port + "/healthz", {
+    headers: { "X-MCP-Email": authEmail, "X-MCP-Key": authKey }
+  });
+  if (!authorizedHealth.ok) throw new Error("human credential auth failed: " + authorizedHealth.status);
   const client = new Client({ name: "project-bridge-smoke", version: "0.0.0" });
-  await client.connect(new StreamableHTTPClientTransport(new URL("http://127.0.0.1:" + port + "/mcp")));
+  await client.connect(new StreamableHTTPClientTransport(
+    new URL("http://127.0.0.1:" + port + "/mcp"),
+    { requestInit: { headers: { "X-MCP-Email": authEmail, "X-MCP-Key": authKey } } }
+  ));
   const listed = await client.listTools();
   const names = new Set(listed.tools.map((tool) => tool.name));
   for (const name of names) {
